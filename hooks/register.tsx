@@ -2,6 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Cache, Limit, Stats, Usage } from '../types'
+import {
+  activityStepEnd,
+  activityStepStart,
+  activityTurnComplete,
+  activityTurnStart,
+  registerActivity,
+  startActivity,
+  togglePane,
+} from './activity.tsx'
 
 // Adapted from JohnnyVizz/claude-kit session-band. Draws the band above the prompt in two
 // rows: turn, prompt cache countdown and speed beside the 5h limit; context beside the weekly
@@ -9,7 +18,8 @@ import type { Cache, Limit, Stats, Usage } from '../types'
 // (model, cwd, title) and relays what this API lacks (the native prompt_cache deadline, the
 // turn count from the transcript) through a temp file. Context and limits come from
 // $.session.usage(), the status line's own figures. It measures output speed itself, and
-// notifies as the prompt cache runs out.
+// notifies as the prompt cache runs out. The button beside Context opens the full view, the
+// activity pane (hooks/activity.tsx).
 
 // Responses shorter than this are mostly tool-call stubs: their timing is noise.
 const MIN_TOKENS = 20
@@ -84,6 +94,9 @@ const usage = atom({ plugin: 'session-band', key: 'usage' } as const, {
   fiveHour: null,
   weekly: null,
 } as Usage)
+
+// The activity pane is open (hooks/activity.tsx writes it): the button's label.
+const isPaneOpen = atom({ plugin: 'session-band', key: 'isPaneOpen' } as const, false)
 
 const limitOf = (limits: { kind: string; percentUsed: number; resetsAt?: string }[], kind: string): Limit | null => {
   const l = limits.find(x => x.kind === kind)
@@ -168,7 +181,9 @@ const notifyCacheExpiry = async ($: EngineInterface, minutes: number) => {
   if (!isDelivered) $.ui.toast(`⏳ ${text}`, { timeoutMs: 30000 })
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  registerActivity(on, options)
+
   // Set by `/session-band demo`, cleared by the next answer.
   let isDemo = false
   // Output tokens and streaming seconds of the main thread's current turn.
@@ -178,6 +193,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
 
+    await startActivity($)
     await $.command.register({
       name: 'session-band',
       description: '`demo <minutes>` previews the prompt cache expiry notification',
@@ -263,35 +279,47 @@ export const register: Register = on => {
       await update($, stats, s => ({ ...s, turn: s.turn + 1 }))
       await update($, isBusy, () => true)
     }
+    await activityTurnStart($, e)
 
     return next(e)
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId !== undefined) return yield* next(e)
+    const isMain = e.agentId === undefined
+    const step = await activityStepStart($, e)
+    const stream = next(e)
 
     // Measured from the response's first item, so time-to-first-token is excluded but
     // thinking that streams hidden or in one late burst is still timed.
     let startedAt: number | null = null
 
-    for await (const chunk of next(e)) {
-      if (startedAt === null) {
-        startedAt = await $.clock.now()
-      }
-
-      if (chunk.kind === 'stop' && chunk.usage !== null) {
-        // Averaged over every request of the turn, so a short tool-call stub at the
-        // end does not stand for the whole reply.
-        turnTokens += chunk.usage.output_tokens
-        turnSeconds += ((await $.clock.now()) - startedAt) / 1000
-        const speed = turnTokens / turnSeconds
-        if (turnTokens >= MIN_TOKENS && turnSeconds >= MIN_SECONDS && speed <= MAX_SPEED) {
-          await update($, stats, s => ({ ...s, speed: Math.round(speed) }))
+    try {
+      for await (const chunk of stream) {
+        if (isMain && startedAt === null) {
+          startedAt = await $.clock.now()
         }
-      }
 
-      yield chunk
+        if (isMain && startedAt !== null && chunk.kind === 'stop' && chunk.usage !== null) {
+          // Averaged over every request of the turn, so a short tool-call stub at the
+          // end does not stand for the whole reply.
+          turnTokens += chunk.usage.output_tokens
+          turnSeconds += ((await $.clock.now()) - startedAt) / 1000
+          const speed = turnTokens / turnSeconds
+          if (turnTokens >= MIN_TOKENS && turnSeconds >= MIN_SECONDS && speed <= MAX_SPEED) {
+            await update($, stats, s => ({ ...s, speed: Math.round(speed) }))
+          }
+        }
+
+        yield chunk
+      }
+    } catch (err) {
+      await activityStepEnd($, e, step, null, startedAt)
+      throw err
     }
+
+    const result = await stream.result
+    await activityStepEnd($, e, step, result, startedAt)
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -305,6 +333,7 @@ export const register: Register = on => {
       await update($, isBusy, () => false)
       await update($, warned, () => 0)
     }
+    await activityTurnComplete($, e)
 
     return result
   })
@@ -315,7 +344,7 @@ export const register: Register = on => {
     // Always drawn, except while Claude Code's own survey takes this row.
     if (e.props.hasSurvey) return next(e)
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
 
     // Amber at a third of the TTL left, red at a sixth: 20 and 10 minutes for a 1h cache.
     // While a reply streams every request rewrites the cache: no countdown to show.
@@ -365,10 +394,33 @@ export const register: Register = on => {
 
     // Each limit stays beside its left item while both fit with the gap between them;
     // otherwise the limits take rows of their own under the left items instead of being cut.
+    // Beside Context: opens the activity pane, the full view; again closes it.
+    const isOpen = await read($, isPaneOpen)
+    // A symbol of the same block as the limits' ⚠ (Miscellaneous Symbols), which the
+    // terminal draws. One icon either way; its color says whether the pane is open.
+    const detailLabel = '☰'
+    const where = { isFullscreen: e.viewport?.isFullscreen ?? false, columns: e.viewport?.columns ?? 80 }
+    const detailButton = (
+      <Button
+        key="detail"
+        plain
+        onPress={async () => {
+          // The button says the rest by its color; a pane that could not be shown, by a toast.
+          const toggled = await togglePane($, where)
+          if (!toggled.isShown && isOpen === false) $.ui.toast(toggled.text)
+        }}
+      >
+        {/* Colored as the limits' ⚠: Context's hue while closed, the OK green while open. */}
+        <Text bold color={isOpen ? OK : CONTEXT}>
+          {detailLabel}
+        </Text>
+      </Button>
+    )
+
     const GAP = 3
     const inner = e.props.bodyColumns - 2 - (level ? 2 : 0)
     const left1 = `Turn: ${s.turn}  ·  Cache: ${cacheText}${cacheNote}  ·  Speed: ${speedText}`
-    const left2 = `Context: ${bar.filled}${bar.empty}${ctxValue}${ctxTokens}`
+    const left2 = `Context: ${bar.filled}${bar.empty}${ctxValue}${ctxTokens}  ${detailLabel}`
     const isSideBySide =
       left1.length + GAP + limitParts('5h limit', u.fiveHour).text.length <= inner &&
       left2.length + GAP + limitParts('Weekly limit', u.weekly).text.length <= inner
@@ -412,8 +464,9 @@ export const register: Register = on => {
               <Box flexGrow={1} flexShrink={1} minWidth={GAP} />
               {limitRow('5h limit', FIVE_HOUR, u.fiveHour)}
             </Box>
-            <Box flexDirection="row" alignItems="center" flexWrap="nowrap">
+            <Box flexDirection="row" alignItems="center" flexWrap="nowrap" columnGap={2}>
               {contextRow}
+              {detailButton}
               <Box flexGrow={1} flexShrink={1} minWidth={GAP} />
               {limitRow('Weekly limit', WEEKLY, u.weekly)}
             </Box>
@@ -421,7 +474,10 @@ export const register: Register = on => {
         ) : (
           <>
             {turnRow}
-            {contextRow}
+            <Box flexDirection="row" alignItems="center" flexWrap="nowrap" columnGap={2}>
+              {contextRow}
+              {detailButton}
+            </Box>
             {limitRow('5h limit', FIVE_HOUR, u.fiveHour)}
             {limitRow('Weekly limit', WEEKLY, u.weekly)}
           </>
