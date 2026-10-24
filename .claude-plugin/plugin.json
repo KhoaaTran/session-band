@@ -1,0 +1,6 @@
+{
+  "name": "session-band",
+  "version": "1.0.0",
+  "description": "Band above the prompt: turn, 1h prompt cache countdown, speed, context, 5h and weekly limits; warns before the cache expires",
+  "types": "./types/index.d.ts"
+}
