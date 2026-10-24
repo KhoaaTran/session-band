@@ -1,0 +1,146 @@
+# session-band
+
+[English](README.md) · Tiếng Việt
+
+Mod Claude Code gồm hai phần, cộng một status line đi kèm:
+
+- **Band** luôn nằm trên prompt: turn, thời gian còn lại của prompt cache, tốc độ output, context, giới hạn 5h và weekly.
+- **Pane activity**, mở bằng nút `☰` cạnh Context: từng prompt, các request gửi lên model, tool call và subagent của chúng.
+- **Status line** (`statusline.js`) dưới prompt: model và effort, thư mục, tên session. Nó cũng chuyển cho band những số liệu mà API của mod không có.
+
+![session-band trong Claude Code: band và status line bên trái, pane activity dock bên phải](docs/preview.png)
+
+<sub>Ảnh minh hoạ dựng theo đúng những gì mod vẽ, không phải ảnh chụp: font và độ rộng thật theo terminal của bạn.</sub>
+
+Giao diện của mod (band, pane, thông báo) viết bằng tiếng Anh; README này giải thích bằng tiếng Việt.
+
+## Cài đặt
+
+Cần Claude Code bản có mod (bật sẵn từ 2.1.287; mod được viết trên 2.1.310), Node.js và git. Chạy được trên macOS, Linux và Windows.
+
+### Một prompt
+
+Mở Claude Code ở thư mục bất kỳ rồi dán nguyên prompt này:
+
+```text
+Cài mod session-band cho Claude Code trên máy này, làm đúng các bước sau:
+
+1. Clone https://github.com/KhoaaTran/session-band.git vào ~/.claude/mods/session-band. Nếu thư mục đã có repo này thì chạy git pull thay vì clone.
+2. Chạy node --version. Nếu không có Node.js thì dừng lại và báo tôi.
+3. Gộp vào ~/.claude/settings.json, giữ nguyên mọi cấu hình đang có (tạo file nếu chưa có). Đường dẫn là đường dẫn tuyệt đối của máy này, dùng dấu / kể cả trên Windows:
+   - env.CLAUDE_CODE_PLUGIN_DIRS = đường dẫn tới thư mục mod. Nếu biến này đã có giá trị khác thì hỏi tôi trước khi đổi.
+   - env.ENABLE_PROMPT_CACHING_1H = "1"
+   - statusLine = { "type": "command", "command": "node <thư mục mod>/statusline.js", "refreshInterval": 1 }. Nếu đã có statusLine khác thì hỏi tôi trước khi thay.
+4. Gộp vào ~/.claude/keybindings.json, giữ các binding đang có (tạo file nếu chưa có, với "$schema": "https://www.schemastore.org/claude-code-keybindings.json"): trong block context "Chat", thêm "ctrl+x ctrl+p": "command:activity". Nếu phím này đang gán việc khác thì hỏi tôi.
+5. Chạy claude plugin validate ~/.claude/mods/session-band và báo kết quả.
+6. Tóm tắt những gì đã đổi trong hai file cấu hình, rồi nhắc tôi mở session mới để mod được nạp.
+```
+
+### Cài tay
+
+1. Clone repo vào `~/.claude/mods/session-band`.
+2. Gộp vào `~/.claude/settings.json`, với `<home>` là đường dẫn tuyệt đối tới thư mục home: `/Users/you` trên macOS, `/home/you` trên Linux, `C:/Users/you` trên Windows:
+
+   ```json
+   {
+     "env": {
+       "CLAUDE_CODE_PLUGIN_DIRS": "<home>/.claude/mods/session-band",
+       "ENABLE_PROMPT_CACHING_1H": "1"
+     },
+     "statusLine": {
+       "type": "command",
+       "command": "node <home>/.claude/mods/session-band/statusline.js",
+       "refreshInterval": 1
+     }
+   }
+   ```
+
+3. Gộp vào `~/.claude/keybindings.json` phím mở pane:
+
+   ```json
+   {
+     "bindings": [{ "context": "Chat", "bindings": { "ctrl+x ctrl+p": "command:activity" } }]
+   }
+   ```
+
+4. Mở session mới. Band hiện trên prompt, `☰` cạnh Context mở pane, status line hiện model, thư mục và tên session. Không thấy band thì chạy `claude --debug` và tìm dòng nạp `session-band` trong debug log.
+
+`ENABLE_PROMPT_CACHING_1H` cho prompt cache sống 1 giờ; thiếu nó cache chỉ sống 5 phút và band hiện `(5m, 1h off)`. `refreshInterval: 1` giữ đồng hồ cache của band khớp từng giây.
+
+Cập nhật: `git pull` trong `~/.claude/mods/session-band`, rồi mở session mới.
+
+### Thêm phần riêng vào status line
+
+Muốn thêm phần riêng của máy mình vào cuối status line mà không sửa repo, tạo `~/.claude/statusline.local.js` export một hàm `(input, colors) => string`: `input` là JSON Claude Code đưa cho status line, `colors` là bảng màu của script. Không có file này thì status line chạy như thường.
+
+```js
+module.exports = (d, C) => (d.session_id ? C.teal + "◆ việc riêng" + C.r : "")
+```
+
+### Band đọc gì
+
+| File | Dùng để |
+|---|---|
+| `claude-prompt-cache-<session id>.json` trong thư mục tạm của hệ điều hành | hạn thật của prompt cache, số turn |
+| `~/.claude/rate-limits-cache.json` | giới hạn 5h/weekly mới nhất của mọi session |
+
+`statusline.js` ghi ra cả hai. Thiếu chúng thì band vẫn chạy: hạn cache được ước tính từ câu trả lời gần nhất, và giới hạn lấy từ `$.session.usage()` của session đang chạy.
+
+## Dùng
+
+| Việc | Cách |
+|---|---|
+| Mở/đóng pane | bấm `☰` cạnh Context (xanh lá khi đang mở), hoặc `/activity` |
+| Phím tắt | `Ctrl+X Ctrl+P` từ ô nhập prompt (gán lúc cài) |
+| Đi vào pane bằng bàn phím | `Ctrl+X Tab`, rồi Tab/Enter; `Ctrl+X X` để đóng |
+| Nới/thu pane | kéo mép pane, hoặc `Ctrl+X ←`/`Ctrl+X →` khi đang ở trong pane |
+| Xoá lịch sử đã xong | `/activity clear` |
+| Thử thông báo cache sắp hết | `/session-band demo <phút>` |
+
+Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (kể cả qua phím tắt) để lại một dòng lệnh, khoảng chục token.
+
+## Đọc số liệu trong pane
+
+| Chỗ | Ý nghĩa |
+|---|---|
+| Dòng Session ở đầu pane | số request, tool call và lỗi; thời gian và chi phí; `Token`: mọi token API đã xử lý, gồm input (kể cả đọc từ cache) và output, tính cả subagent (mỗi request gửi lại cả hội thoại nên số này lớn hơn context nhiều) · `Out`: token model sinh ra · `Cache hit`: tỉ lệ input của main loop đọc từ cache |
+| `│` | chia đôi dòng: tên bên trái, số liệu canh phải bên phải |
+| Thời gian | dưới 1 phút viết bằng giây (`14s`), từ 1 phút viết dạng đồng hồ (`01:39`, `1:02:40`); cột bên phải đệm cho cùng độ rộng để thẳng hàng |
+| Dòng prompt, bên phải | chi phí của prompt, gồm cả subagent · tổng thời gian; context sau prompt nằm ở dòng tóm tắt |
+| Dòng request (`#n`), bên phải | context sau request đó · thời gian từ lúc gửi request tới khi tool cuối xong |
+| Dòng tool, bên phải | thời gian tool chạy; màu cam khi từ 30s trở lên |
+| `In` / `Out` | token input (gồm cache) / token model sinh ra, lấy từ API |
+| `Wait` / `Write` | từ lúc gửi tới phần đầu tiên của response về / từ đó tới hết response |
+| `⚠` | có chuyện cần xem: tool lỗi, request lỗi, cache bị ghi lại, prompt bị dừng |
+| `⚠ cache written again 365k` | cache đã hết hạn nên request ghi lại cả context (ghi từ 20k token và ít nhất nửa input) |
+| `Cost` | ước tính theo bảng giá trong `hooks/activity.tsx`, đã gồm subagent; engine chỉ báo token chứ không báo tiền |
+
+Tool chạy song song với lúc model đang viết câu trả lời, nên thời gian của request không bằng `Wait + Write` cộng thời gian các tool.
+
+Dòng `Agent` mở ra được, hiện context, chi phí và các tool call của subagent mà nó tạo. Dòng tool lỗi mở ra được, hiện vài dòng đầu của thông báo lỗi. Khi đang xem transcript của một subagent, pane chỉ hiện tool call của subagent đó.
+
+Pane chỉ giữ dữ liệu của session đang chạy: tối đa 100 prompt, 300 request, 1000 tool call, 100 subagent.
+
+## Cấu trúc
+
+| File | Nội dung |
+|---|---|
+| `hooks/register.tsx` | band, các hook dùng chung, nút `☰` |
+| `hooks/activity.tsx` | pane activity và dữ liệu của nó |
+| `hooks/activity.test.tsx` | test của pane và band |
+| `types/index.d.ts` | kiểu của mọi giá trị trong `$.state` |
+| `statusline.js` | status line; Node chạy nó mỗi giây, ngoài mod, nên engine không nạp nó |
+
+Mỗi sự kiện chỉ được hook một lần không có matcher, nên `register.tsx` hook `session.start`, `turn.start`, `turn.step`, `turn.complete` rồi gọi các hàm `activity*` của `activity.tsx`.
+
+## Kiểm tra
+
+```sh
+npx -p typescript tsc -p .        # cần .claude-plugin/types/, engine tự sinh khi nạp mod
+claude plugin validate .
+claude plugin test .
+```
+
+## License
+
+[MIT](LICENSE)

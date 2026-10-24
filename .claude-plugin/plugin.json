@@ -2,5 +2,6 @@
   "name": "session-band",
   "version": "1.0.0",
   "description": "Band above the prompt: turn, 1h prompt cache countdown, speed, context, 5h and weekly limits, and a button to the activity pane (requests, tool calls and subagents per prompt); warns before the cache expires",
+  "license": "MIT",
   "types": "./types/index.d.ts"
 }
