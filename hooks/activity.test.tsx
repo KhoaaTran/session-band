@@ -757,3 +757,46 @@ test('the folded older prompts open when pressed', async ($, on) => {
   expect(await ui.find({ type: 'Button', text: /follow/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a shell moved to the background runs on under Background until its notification ends it', async ($, on) => {
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('tool.call', () => ({
+    result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bg1' },
+    text: 'Command running in background with ID: bg1',
+  }))
+
+  // A started session ticks the clocks of what still runs.
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ turnId: 't1', text: 'build it' })
+  await $.tool.call({ tool: 'PowerShell', command: './gradlew clean', run_in_background: true })
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer' })
+  await clock.set(clock.now() + 6 * 60_000)
+
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Background:\s1 running/ })).toBeDefined()
+  expect((await ui.find({ type: 'Button', text: /gradlew clean/ }))?.key).toMatch(/^b:/)
+  expect(await ui.find({ type: 'Text', text: /06:00/ })).toBeDefined()
+  await ui.unmount()
+
+  const notification = [
+    '<task-notification>',
+    '<task-id>bg1</task-id>',
+    '<tool-use-id>toolu_unknown</tool-use-id>',
+    '<status>completed</status>',
+    '<summary>Background command "gradlew clean" completed (exit code 0)</summary>',
+    '</task-notification>',
+  ].join('\n')
+  await $.prompt.submit({ text: notification, origin: { kind: 'task-notification' }, wait: false, isMeta: true })
+  await $.turn.start({ turnId: 't2', text: notification })
+
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Background:/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /\d{2}:\d{2} Background command "gradlew/})).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /task-notification/ })).toBeUndefined()
+  await ui.unmount()
+})

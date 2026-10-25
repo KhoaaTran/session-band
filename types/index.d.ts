@@ -22,7 +22,8 @@ export type Usage = {
 
 // The activity pane (hooks/activity.tsx).
 
-export type CallStatus = 'running' | 'ok' | 'error' | 'denied'
+/** `background`: the call answered, its command still runs as a background task. */
+export type CallStatus = 'running' | 'background' | 'ok' | 'error' | 'denied'
 
 export type Call = {
   id: string
@@ -37,7 +38,12 @@ export type Call = {
   step?: number
   status: CallStatus
   startedAt: number
+  /** When the call answered; a background command runs on past it. */
   endedAt?: number
+  /** The background task the call left running (a shell moved to the background). */
+  taskId?: string
+  /** When that task's notification said it ended. */
+  taskEndedAt?: number
   /** Characters of the result as the model reads it. */
   resultChars: number
   /** The first lines of what an errored or denied call answered. */

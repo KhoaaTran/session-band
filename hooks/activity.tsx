@@ -80,8 +80,14 @@ const SEPARATOR = '#89b4fa'
 const RULE = '#45475a'
 
 // Glyphs Claude Code draws itself, so the terminal's font has them.
-const CALL_GLYPH: Record<CallStatus, string> = { running: '●', ok: '✓', error: '✗', denied: '✗' }
-const CALL_COLOR: Record<CallStatus, string> = { running: YELLOW, ok: OK, error: ALERT, denied: WARN }
+const CALL_GLYPH: Record<CallStatus, string> = { running: '●', background: '●', ok: '✓', error: '✗', denied: '✗' }
+const CALL_COLOR: Record<CallStatus, string> = {
+  running: YELLOW,
+  background: YELLOW,
+  ok: OK,
+  error: ALERT,
+  denied: WARN,
+}
 const AGENT_GLYPH: Record<string, string> = { done: '✓', failed: '✗' }
 const AGENT_COLOR: Record<string, string> = { running: YELLOW, done: OK, failed: ALERT }
 // The pane redraws once a second while something runs: one frame per redraw.
@@ -322,6 +328,39 @@ const recordOf = (result: unknown): string | undefined => {
   }
 }
 
+// The background task a shell call left running (`run_in_background`, ctrl+b, a timeout,
+// a message queued for the model). None when the command ends with the caller's final
+// response: no notification follows it.
+const taskOf = (result: unknown): string | undefined => {
+  if (typeof result !== 'object' || result === null) return undefined
+  const r = result as { backgroundTaskId?: unknown; backgroundEndsWithFinalResponse?: unknown }
+  return typeof r.backgroundTaskId === 'string' && r.backgroundEndsWithFinalResponse !== true
+    ? r.backgroundTaskId
+    : undefined
+}
+
+// A background task's end, as its notification writes it:
+// <task-notification><task-id>…</task-id><tool-use-id>…</tool-use-id>…<status>completed</status>
+// <summary>Background command "…" completed (exit code 0)</summary></task-notification>
+type TaskEnd = { taskId?: string; toolUseId?: string; status?: string; summary?: string }
+const TASK_NOTIFICATION = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g
+const tagOf = (block: string, tag: string): string | undefined =>
+  block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1]?.trim() || undefined
+const taskEndsOf = (text: string): TaskEnd[] =>
+  [...text.matchAll(TASK_NOTIFICATION)].map(([, block = '']) => ({
+    taskId: tagOf(block, 'task-id'),
+    toolUseId: tagOf(block, 'tool-use-id'),
+    status: tagOf(block, 'status'),
+    summary: tagOf(block, 'summary'),
+  }))
+
+/** A prompt's row text: a task notification reads as its summary, not its markup. */
+const promptTitle = (text: string): string => {
+  const ends = taskEndsOf(text)
+  if (!ends.length) return oneLine(text)
+  return ends.map(t => oneLine(t.summary ?? `Task ${t.taskId ?? ''} ${t.status ?? 'ended'}`)).join(' · ')
+}
+
 // Each call's whole input and output, one file per call in the session's own folder:
 // the state keeps only their first lines, so the session stays small.
 // A temporary folder only this user reads, on each OS: TEMP or TMP on Windows, TMPDIR on
@@ -539,6 +578,10 @@ const isCacheRewrite = (s: Step): boolean =>
   s.cacheWrite >= s.input / 2
 
 const failedOf = (list: Call[]) => list.filter(c => c.status === 'error' || c.status === 'denied').length
+// Still at work: answering, or its command running on in the background.
+const isLive = (c: Call) => c.status === 'running' || c.status === 'background'
+// How long a call ran: a background command's, until its task ended.
+const callMs = (c: Call, at: number) => ((c.taskId === undefined ? c.endedAt : c.taskEndedAt) ?? at) - c.startedAt
 
 /** The subagent an Agent call spawned, and what a subagent or a prompt cost with every subagent under it. */
 const costsOf = (allCalls: Call[], agentList: AgentRun[]) => {
@@ -684,7 +727,7 @@ export async function startActivity($: EngineInterface): Promise<void> {
     await restoreTotals($)
     const [c, a, p] = [await read($, calls), await read($, agents), await read($, prompts)]
     const isRunning =
-      c.some(x => x.status === 'running') ||
+      c.some(isLive) ||
       a.some(x => x.status === 'running') ||
       (p.length > 0 && p.at(-1)?.endedAt === undefined)
     if (isRunning) await tick($)
@@ -829,7 +872,7 @@ export const registerActivity: Register = on => {
       const keep = last?.endedAt === undefined ? last?.turnId : undefined
       await update($, prompts, list => list.filter(p => p.turnId === keep))
       await update($, steps, list => list.filter(s => s.turnId === keep))
-      await update($, calls, list => list.filter(c => c.status === 'running' || (keep && c.turnId === keep)))
+      await update($, calls, list => list.filter(c => isLive(c) || (keep && c.turnId === keep)))
       await update($, agents, list => list.filter(a => a.status === 'running'))
       $.ui.toast('Cleared what is done from the pane.')
       return {}
@@ -897,12 +940,14 @@ export const registerActivity: Register = on => {
 
     // `isRecord`: the tool answered with no text (ToolSearch's tool references, Read's image),
     // so its result record stands in, as the tool returned it.
-    const finish = async (status: CallStatus, text: string, isRecord = false) => {
+    // `taskId`: the command runs on in the background; its notification ends the row.
+    const finish = async (status: CallStatus, text: string, isRecord = false, taskId?: string) => {
       const endedAt = await $.clock.now()
       const error = status === 'ok' ? undefined : excerpt(text)
       const output = status === 'ok' ? excerpt(text) : undefined
+      const ended = { status: taskId ? ('background' as const) : status, taskId, endedAt }
       await update($, calls, list =>
-        list.map(c => (c.id === id ? { ...c, status, endedAt, resultChars: text.length, error, output, isRecord } : c)),
+        list.map(c => (c.id === id ? { ...c, ...ended, resultChars: text.length, error, output, isRecord } : c)),
       )
       // A failed write leaves the screen on the first lines the state keeps. The folder is
       // marked alive first: after a /clear, the new id's has no mark until the minute's.
@@ -923,12 +968,30 @@ export const registerActivity: Register = on => {
       const status: CallStatus = ran.deny !== undefined ? 'denied' : ran.isError ? 'error' : 'ok'
       const text = ran.deny ?? ran.text ?? ''
       const record = text ? undefined : recordOf(ran.result)
-      await finish(status, record ?? text, record !== undefined)
+      await finish(status, record ?? text, record !== undefined, status === 'ok' ? taskOf(ran.result) : undefined)
       return ran
     } catch (err) {
       await finish('error', String(err))
       throw err
     }
+  })
+
+  // A background task's notification, as it starts a turn or reaches a running one: the
+  // call that left the task running ends with it.
+  on('prompt.submit', async ($, e, next) => {
+    const ends = e.origin.kind === 'task-notification' ? taskEndsOf(e.text) : []
+    if (ends.length) {
+      const at = await $.clock.now()
+      await update($, calls, list =>
+        list.map((c): Call => {
+          const end = ends.find(t => t.toolUseId === c.id || (t.taskId !== undefined && t.taskId === c.taskId))
+          if (!end || c.status !== 'background') return c
+          return { ...c, status: end.status === 'completed' ? 'ok' : 'error', taskEndedAt: at }
+        }),
+      )
+      await update($, now, () => at)
+    }
+    return next(e)
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -1083,15 +1146,15 @@ export const registerActivity: Register = on => {
       // A call made before input was kept still shows what its row named.
       const input = whole ? whole.input : (c.input ?? (c.target || undefined))
       const answer = whole ? whole.output : (c.error ?? c.output)
-      const isRunning = c.status === 'running'
+      const isRunning = isLive(c)
       const isCut = isRead && !whole && !isRunning && (input ?? answer) !== undefined
-      const ms = (c.endedAt ?? at) - c.startedAt
+      const ms = callMs(c, at)
       return (
         <Box flexDirection="column">
           <Button key={BACK} label="‹ Back" plain onPress={() => closeDetail(c.id)} />
           <Box marginTop={1}>
             <Text>
-              <Text color={CALL_COLOR[c.status]}>{c.status === 'running' ? frame : CALL_GLYPH[c.status]}</Text>
+              <Text color={CALL_COLOR[c.status]}>{isRunning ? frame : CALL_GLYPH[c.status]}</Text>
               <Text bold color={TOOL}>{` ${c.tool}`}</Text>
             </Text>
           </Box>
@@ -1132,13 +1195,14 @@ export const registerActivity: Register = on => {
       )
     }
 
-    const callRow = (c: Call) => {
-      const isRunning = c.status === 'running'
+    // `prefix`: a call listed twice (under its request and under Background) keys each row apart.
+    const callRow = (c: Call, prefix = 'a') => {
+      const isRunning = isLive(c)
       const run = runOf(c)
       // An Agent call opens on its subagent in place; any other call opens its own screen.
-      const key = `a:${c.id}`
+      const key = `${prefix}:${c.id}`
       const isOpen = run !== undefined && v.expanded.includes(key)
-      const ms = (c.endedAt ?? at) - c.startedAt
+      const ms = callMs(c, at)
       // Texts alone: a Fragment draws as a Box, which a Text may not hold.
       const head = [
         <Text key="mark" color={MUTED}>
@@ -1190,7 +1254,7 @@ export const registerActivity: Register = on => {
       return (
         <Box key={key} flexDirection="column">
           {hidden > 0 && unfold(key, `… ${hidden} earlier tool calls`)}
-          {shown.map(callRow)}
+          {shown.map(c => callRow(c))}
         </Box>
       )
     }
@@ -1303,7 +1367,7 @@ export const registerActivity: Register = on => {
       const lastDone = ownSteps.findLast(s => s.input !== undefined)
       const after = lastDone?.input !== undefined ? lastDone.input + (lastDone.output ?? 0) : undefined
       const price = cost > 0 ? `≈${fmtCost(cost)}` : ''
-      const text = p.text ? oneLine(p.text) : '(continuation)'
+      const text = p.text ? promptTitle(p.text) : '(continuation)'
       // When it was sent stands where the prompt mark was: "▸ 14:32 fix the scroll", the
       // arrow in the separator's blue as the footer's ▴, the time lit while the prompt is
       // open or runs.
@@ -1418,6 +1482,18 @@ export const registerActivity: Register = on => {
       </Box>
     )
 
+    // The commands still running in the background, whatever prompt started them: their
+    // prompt's row may be folded away long before they end.
+    // Background: 1 running
+    // ⠋ PowerShell gradlew clean               09:19
+    const background = allCalls.filter(c => c.status === 'background')
+    const backgroundBlock = background.length > 0 && (
+      <Box key="background" flexDirection="column" marginBottom={1}>
+        {items('background', [item('bg', 'Background', TIME, `${background.length} running`, YELLOW)])}
+        {background.map(c => callRow(c, 'b'))}
+      </Box>
+    )
+
     // Newest first: the pane opens at its top.
     const newest = [...promptList].reverse()
     const shownPrompts = v.expanded.includes(allKey('prompts')) ? newest : newest.slice(0, MAX_PROMPTS_SHOWN)
@@ -1456,6 +1532,7 @@ export const registerActivity: Register = on => {
     return (
       <Box flexDirection="column" paddingX={1}>
         {session}
+        {backgroundBlock}
         {subagents}
         {promptList.length === 0 && before.prompts === 0 && <Text color={MUTED}>No prompts yet: send one to start.</Text>}
         {shownPrompts.flatMap((p, i) => {
