@@ -191,12 +191,25 @@ const fit = (text: string, width: number): string => {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
+// A Text refuses control characters: drop a CLI's escape sequences (colours, a terminal
+// link's OSC) and the rest. A lone \r redraws its line, as a progress bar does: the
+// line shows what a terminal leaves of it, its last part.
+const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])/g
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
+const printable = (text: string): string =>
+  text
+    .replace(ANSI, '')
+    .replace(/\t/g, ' ')
+    .split(/\r?\n/)
+    .map(line => (line.split('\r').filter(Boolean).at(-1) ?? '').replace(CONTROL, ''))
+    .join('\n')
+
 // What an errored call answered, kept short: its first non-empty lines.
 const ERROR_LINES = 4
 const ERROR_CHARS = 400
 const errorOf = (text: string): string | undefined => {
-  const lines = text
-    .split(/\r?\n/)
+  const lines = printable(text)
+    .split('\n')
     .map(line => line.trimEnd())
     .filter(Boolean)
     .slice(0, ERROR_LINES)
@@ -714,7 +727,8 @@ export const registerActivity: Register = on => {
           </Box>
           {!run && isOpen && c.error && (
             <Box flexDirection="column" marginLeft={2}>
-              {c.error.split('\n').map((line, i) => (
+              {/* Cleaned again as drawn: an error stored before errorOf cleaned it. */}
+              {printable(c.error).split('\n').map((line, i) => (
                 <Text key={`e${i}`} color={ALERT} wrap="truncate-end">
                   {line}
                 </Text>

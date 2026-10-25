@@ -220,6 +220,90 @@ test('a cache rewrite is flagged, a failed call opens on its error, and the sess
   await ui.unmount()
 })
 
+test('a failed call whose output carries escape sequences still opens on its error', async ($, on) => {
+  mock.clock(on)
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [{ name: 'Bash', input: { command: 'npx skills --help' } }],
+      stopReason: 'tool_use' as const,
+      usage: USAGE,
+    }
+  })
+  // Colours, a terminal link (OSC 8), a tab and a progress line redrawn with \r.
+  on('tool.call', () => ({
+    result: {},
+    isError: true as const,
+    text: 'Exit code 255\n\x1b[1mUsage:\x1b[0m skills <command>\r\n\x1b]8;;https://x.dev\x07docs\x1b]8;;\x07 and\tadd <package>\n10%\r100%',
+  }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't1', text: 'install' })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  for await (const _ of stream) {
+    // drained
+  }
+  await stream.result
+  await $.tool.call({ tool: 'Bash', command: 'npx skills --help' })
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer', usage: USAGE })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const failedKey = (await ui.find({ type: 'Button', text: /npx skills --help/ }))?.key
+  expect(failedKey).toBeDefined()
+  await ui.press({ key: failedKey! })
+  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^docs and add <package>$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^100%$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an error stored with escape sequences by an earlier version still opens', async ($, on) => {
+  mock.clock(on)
+  // What the code before the fix wrote stays through the reload.
+  on('state.get', { plugin: 'session-band', key: 'calls' }, () => ({
+    value: {
+      version: 1,
+      value: {
+        shape: 'calls-1',
+        value: [
+          {
+            id: 'c1',
+            tool: 'PowerShell',
+            target: 'npx skills --help',
+            turnId: 't1',
+            status: 'error',
+            startedAt: 0,
+            endedAt: 1000,
+            resultChars: 40,
+            error: 'Exit code 255\n\x1b[1mUsage:\x1b[0m skills <command>',
+          },
+        ],
+      },
+    },
+  }))
+  on('state.get', { plugin: 'session-band', key: 'prompts' }, () => ({
+    value: {
+      version: 1,
+      value: {
+        shape: 'prompts-1',
+        value: [{ turnId: 't1', text: 'install', startedAt: 0, endedAt: 1000, isAborted: false, costUsd: 0 }],
+      },
+    },
+  }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 't1' })
+  await ui.press({ key: 'a:c1' })
+  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the folded older prompts open when pressed', async ($, on) => {
   mock.clock(on)
   on('command.register', () => ({ value: { command: 'activity' } }))
