@@ -94,6 +94,12 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ việc riêng" + C.r : 
 
 Thư mục bị xoá khi session kết thúc (thoát, `/clear`, resume). Khi một session khởi động, nó xoá thư mục của các session đã kết thúc mà chưa tự xoá được, kể cả session bị tắt ngang, và để yên thư mục mà một session khác vẫn đang ghi dấu. State của session chỉ giữ vài dòng đầu của mỗi call.
 
+| Store | Dùng để |
+|---|---|
+| `totals:<session id>` trong `$.store` riêng của mod (một file JSON trong `~/.claude`) | chỉ các số ở dòng Session, khoảng chục con số, lưu sau mỗi câu trả lời và khi session kết thúc; giữ 50 session gần nhất |
+
+Khi resume, pane tính tiếp từ các số đó: dòng Session, Time, Cost và Token cộng cả phần trước, còn các prompt trước lúc resume chỉ hiện thành một dòng đếm, `… 9 prompts before the resume`. Dòng prompt, request và tool call của chúng không được giữ.
+
 ## Dùng
 
 | Việc | Cách |
@@ -103,7 +109,7 @@ Thư mục bị xoá khi session kết thúc (thoát, `/clear`, resume). Khi m�
 | Đi vào pane bằng bàn phím | `Ctrl+X Tab`, rồi Tab/Enter; `Ctrl+X X` để đóng |
 | Nới/thu pane | kéo mép pane, hoặc `Ctrl+X ←`/`Ctrl+X →` khi đang ở trong pane |
 | Xem đầy đủ một tool call | bấm vào dòng của nó; `‹ Back` để quay lại đúng dòng đó |
-| Xoá lịch sử đã xong | `/activity clear`; `/clear` cho pane bắt đầu lại cùng hội thoại mới |
+| Xoá lịch sử đã xong | `/activity clear`; `/clear` cho pane bắt đầu lại cùng hội thoại mới; resume thì tính tiếp từ số của session |
 | Thử thông báo cache sắp hết | `/session-band demo <phút>` |
 
 Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (kể cả qua phím tắt) để lại một dòng lệnh, khoảng chục token.
@@ -115,6 +121,7 @@ Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (k
 | Dòng Session ở đầu pane | số request, tool call và lỗi; thời gian và chi phí; `Token`: mọi token API đã xử lý, gồm input (kể cả đọc từ cache) và output, tính cả subagent (mỗi request gửi lại cả hội thoại nên số này lớn hơn context nhiều) · `Out`: token model sinh ra · `Cache hit`: tỉ lệ input của main loop đọc từ cache |
 | `│` | chia đôi dòng: tên bên trái, số liệu canh phải bên phải |
 | Thời gian | dưới 1 phút viết bằng giây (`14s`), từ 1 phút viết dạng đồng hồ (`01:39`, `1:02:40`); cột bên phải đệm cho cùng độ rộng để thẳng hàng |
+| Dòng prompt, bên trái | giờ gửi (`14:21`, sáng màu khi prompt đang mở hoặc đang chạy), rồi nội dung prompt; khi danh sách vắt qua nửa đêm, một dòng kẻ ghi ngày (`── 24/10 ──`) |
 | Dòng prompt, bên phải | chi phí của prompt, gồm cả subagent · tổng thời gian; context sau prompt nằm ở dòng tóm tắt |
 | Dòng request (`#n`), bên phải | context sau request đó · thời gian từ lúc gửi request tới khi tool cuối xong |
 | Dòng tool, bên phải | thời gian tool chạy; màu cam khi từ 30s trở lên |
@@ -130,7 +137,7 @@ Dòng `Agent` mở ra được, hiện context, chi phí và các tool call củ
 
 Các dòng tool khác mở ra màn riêng: trạng thái, thời gian, độ dài kết quả, rồi `In` đúng như tool nhận và `Out` đầy đủ như model đã đọc. `In` của shell là câu lệnh nguyên văn, kèm bên dưới dạng JSON các tham số làm đổi cách chạy (timeout, chạy nền); của tool khác là các tham số dạng JSON. Tool trả về không có chữ (ToolSearch, đọc ảnh) thì hiện bản ghi kết quả của tool, dữ liệu ảnh chỉ ghi kích thước. Màu và ký tự điều khiển bị bỏ khi vẽ lên màn hình, còn trong file vẫn giữ nguyên. Quá 80.000 ký tự thì màn hình ghi đường dẫn file chứa phần còn lại.
 
-Pane chỉ giữ dữ liệu của session đang chạy: tối đa 100 prompt, 300 request, 1000 tool call, 100 subagent.
+Pane liệt kê những gì tiến trình này thấy của session: tối đa 100 prompt, 300 request, 1000 tool call, 100 subagent. Chỉ các số ở dòng Session còn lại sau đó.
 
 ## Cấu trúc
 

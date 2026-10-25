@@ -92,6 +92,12 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ my thing" + C.r : "")
 
 The folder goes when its session ends (exit, `/clear`, a resume). A session's start removes the folders of sessions that ended without removing theirs, a killed one included, and leaves alone those another running session still marks. The session's state keeps only each call's first lines.
 
+| Store | For |
+|---|---|
+| `totals:<session id>` in the mod's own `$.store` (a JSON file under `~/.claude`) | the session lines' figures alone, about ten numbers, saved at each answer and at the session's end; the last 50 sessions are kept |
+
+A resumed session's pane goes on from those figures: its Session, Time, Cost and Token lines count what came before, and the prompts from before the resume show as one line, `… 9 prompts before the resume`. Their rows, requests and tool calls are not kept.
+
 ## Use
 
 | To | How |
@@ -101,7 +107,7 @@ The folder goes when its session ends (exit, `/clear`, a resume). A session's st
 | Move into the pane | `Ctrl+X Tab`, then Tab and Enter; `Ctrl+X X` closes it |
 | Widen or narrow the pane | drag its edge, or `Ctrl+X ←`/`Ctrl+X →` from inside it |
 | See a tool call whole | press its row; `‹ Back` returns to it |
-| Clear what is done | `/activity clear`; `/clear` starts the pane over with the new conversation |
+| Clear what is done | `/activity clear`; `/clear` starts the pane over with the new conversation; a resume goes on from the session's figures |
 | Preview the cache expiry notice | `/session-band demo <minutes>` |
 
 Pressing the band's button writes nothing to the transcript. Running `/activity` (the shortcut too) leaves one command line, about ten tokens.
@@ -113,6 +119,7 @@ Pressing the band's button writes nothing to the transcript. Running `/activity`
 | Session lines, top | requests, tool calls and failures; time and cost; `Token`: every token the API processed, input with its cache reads and output, subagents included (each request sends the conversation again, so it far outgrows the context) · `Out`: tokens written · `Cache hit`: the share of the main loop's input read from the cache |
 | `│` | splits a row: the name on the left, its figures right-aligned on the right |
 | Times | seconds under a minute (`14s`), a clock from a minute (`01:39`, `1:02:40`); the right column pads them to one width so they line up |
+| Prompt row, left | when it was sent (`14:21`, lit while it is open or runs), then its text; where the prompts listed cross midnight, a rule names the day (`── 24/10 ──`) |
 | Prompt row, right | what the prompt cost, subagents included · its whole time; the context it left is in its summary |
 | Request row (`#n`), right | context after that request · time from sending it to its last tool's answer |
 | Tool row, right | how long the tool ran; orange from 30s |
@@ -128,7 +135,7 @@ An `Agent` row opens on the subagent it spawned: its context, cost and tool call
 
 Any other tool row opens its own screen: status, time and result size, then `In` as the tool took it and `Out` whole, as the model read it. `In` is a shell's command as written, with any argument that changes its run (a timeout, a background run) as JSON under it, or another tool's arguments as JSON. A tool that answered with no text (ToolSearch, an image read) shows its result record, an image's data as its size. Colours and control characters are left out of what the screen draws, not of the file. Past 80,000 characters the screen names the file that holds the rest.
 
-The pane keeps the running session alone: up to 100 prompts, 300 requests, 1000 tool calls, 100 subagents.
+The pane lists what this process saw of the session: up to 100 prompts, 300 requests, 1000 tool calls, 100 subagents. Only the session lines' figures outlive it.
 
 ## Layout
 
