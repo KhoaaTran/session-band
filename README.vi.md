@@ -5,7 +5,7 @@
 Mod Claude Code gồm hai phần, cộng một status line đi kèm:
 
 - **Band** luôn nằm trên prompt: turn, thời gian còn lại của prompt cache, tốc độ output, context, giới hạn 5h và weekly.
-- **Pane activity**, mở bằng nút `☰` cạnh Context: từng prompt, các request gửi lên model, tool call và subagent của chúng.
+- **Pane activity**, mở bằng nút `☰` cạnh Context: từng prompt, các request gửi lên model, tool call và subagent của chúng, cùng các shell còn đang chạy nền.
 - **Status line** (`statusline.js`) dưới prompt: model và effort, thư mục, tên session. Nó cũng chuyển cho band những số liệu mà API của mod không có.
 
 ![session-band trong Claude Code: band và status line bên trái, pane activity dock bên phải](docs/preview.png)
@@ -119,12 +119,13 @@ Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (k
 | Chỗ | Ý nghĩa |
 |---|---|
 | Dòng Session ở đầu pane | số request, tool call và lỗi; thời gian và chi phí; `Token`: mọi token API đã xử lý, gồm input (kể cả đọc từ cache) và output, tính cả subagent (mỗi request gửi lại cả hội thoại nên số này lớn hơn context nhiều) · `Out`: token model sinh ra · `Cache hit`: tỉ lệ input của main loop đọc từ cache |
+| `Background: 1 running` | nằm dưới dòng Session khi có shell chạy nền (`run_in_background`, ctrl+b, quá timeout): mỗi lệnh một dòng, đếm giờ tới khi task kết thúc, bất kể prompt nào khởi động nó |
 | `│` | chia đôi dòng: tên bên trái, số liệu canh phải bên phải |
 | Thời gian | dưới 1 phút viết bằng giây (`14s`), từ 1 phút viết dạng đồng hồ (`01:39`, `1:02:40`); cột bên phải đệm cho cùng độ rộng để thẳng hàng |
-| Dòng prompt, bên trái | giờ gửi (`14:21`, sáng màu khi prompt đang mở hoặc đang chạy), rồi nội dung prompt; khi danh sách vắt qua nửa đêm, một dòng kẻ ghi ngày (`── 24/10 ──`) |
+| Dòng prompt, bên trái | giờ gửi (`14:21`, sáng màu khi prompt đang mở hoặc đang chạy), rồi nội dung prompt; lượt do notification của task nền mở ra thì hiện phần tóm tắt (`Background command "…" completed (exit code 0)`); khi danh sách vắt qua nửa đêm, một dòng kẻ ghi ngày (`── 24/10 ──`) |
 | Dòng prompt, bên phải | chi phí của prompt, gồm cả subagent · tổng thời gian; context sau prompt nằm ở dòng tóm tắt |
 | Dòng request (`#n`), bên phải | context sau request đó · thời gian từ lúc gửi request tới khi tool cuối xong |
-| Dòng tool, bên phải | thời gian tool chạy; màu cam khi từ 30s trở lên |
+| Dòng tool, bên phải | thời gian tool chạy, với shell chạy nền thì tính tới khi task kết thúc; màu cam khi từ 30s trở lên |
 | `In` / `Out` | token input (gồm cache) / token model sinh ra, lấy từ API |
 | `Wait` / `Write` | từ lúc gửi tới phần đầu tiên của response về / từ đó tới hết response |
 | `⚠` | có chuyện cần xem: tool lỗi, request lỗi, cache bị ghi lại, prompt bị dừng |

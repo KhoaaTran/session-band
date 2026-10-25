@@ -5,7 +5,7 @@ English · [Tiếng Việt](README.vi.md)
 A Claude Code mod in two parts, with a status line to go with it:
 
 - **The band**, always above the prompt: turn, time left on the prompt cache, output speed, context, and the 5h and weekly limits.
-- **The activity pane**, opened from `☰` beside Context: each prompt, the requests it sent to the model, their tool calls and subagents.
+- **The activity pane**, opened from `☰` beside Context: each prompt, the requests it sent to the model, their tool calls and subagents, and the shells still running in the background.
 - **The status line** (`statusline.js`) under the prompt: model and effort, folder, session title. It also hands the band the figures the mod API lacks.
 
 ![session-band in Claude Code: the band and status line on the left, the activity pane docked on the right](docs/preview.png)
@@ -117,12 +117,13 @@ Pressing the band's button writes nothing to the transcript. Running `/activity`
 | Where | Means |
 |---|---|
 | Session lines, top | requests, tool calls and failures; time and cost; `Token`: every token the API processed, input with its cache reads and output, subagents included (each request sends the conversation again, so it far outgrows the context) · `Out`: tokens written · `Cache hit`: the share of the main loop's input read from the cache |
+| `Background: 1 running` | under the session lines while a shell runs in the background (`run_in_background`, ctrl+b, a timeout): one row a command, timed until its task ends, whichever prompt started it |
 | `│` | splits a row: the name on the left, its figures right-aligned on the right |
 | Times | seconds under a minute (`14s`), a clock from a minute (`01:39`, `1:02:40`); the right column pads them to one width so they line up |
-| Prompt row, left | when it was sent (`14:21`, lit while it is open or runs), then its text; where the prompts listed cross midnight, a rule names the day (`── 24/10 ──`) |
+| Prompt row, left | when it was sent (`14:21`, lit while it is open or runs), then its text; a turn a background task's notification started reads as its summary (`Background command "…" completed (exit code 0)`); where the prompts listed cross midnight, a rule names the day (`── 24/10 ──`) |
 | Prompt row, right | what the prompt cost, subagents included · its whole time; the context it left is in its summary |
 | Request row (`#n`), right | context after that request · time from sending it to its last tool's answer |
-| Tool row, right | how long the tool ran; orange from 30s |
+| Tool row, right | how long the tool ran, a background shell's until its task ended; orange from 30s |
 | `In` / `Out` | input tokens (cache included) / tokens the model wrote, from the API |
 | `Wait` / `Write` | from sending to the response's first item / from there to its end |
 | `⚠` | something worth a look: a failed tool, a failed request, a cache rewrite, a prompt stopped |
