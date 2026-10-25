@@ -140,6 +140,29 @@ export type View = {
   detail?: string
 }
 
+/**
+ * The figures of the pane's session header, summed over what the pane keeps. Saved per
+ * session in `$.store`, so a resumed session's header starts from what it showed before;
+ * the rows themselves are not kept.
+ */
+export type Totals = {
+  sessionId: string
+  /** Prompts sent: those before a resume are counted, not listed. */
+  prompts: number
+  requests: number
+  /** Main-loop tool calls, and those of them that failed or were denied. */
+  tools: number
+  failed: number
+  durationMs: number
+  costUsd: number
+  /** Every token the API processed, the main loop's and the subagents'. */
+  tokens: number
+  output: number
+  /** The main loop's input, and the part of it read from the cache. */
+  mainInput: number
+  cacheRead: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'session-band': {
@@ -156,6 +179,8 @@ declare module 'claude-code' {
       now: number
       body: CallBody | null
       isPaneOpen: boolean
+      /** The header's figures from before this process: a resumed session's earlier ones. */
+      carried: Totals | null
     }
   }
 }

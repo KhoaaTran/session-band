@@ -10,7 +10,7 @@ import type {
   TurnStepResult,
 } from 'claude-code'
 
-import type { AgentRun, Call, CallBody, CallStatus, Prompt, Step, View } from '../types'
+import type { AgentRun, Call, CallBody, CallStatus, Prompt, Step, Totals, View } from '../types'
 
 // The band's full view: a pane of what the session does, opened from the band's button
 // beside Context, `/activity` or ctrl+x ctrl+p. Each prompt lists its requests to the model,
@@ -59,6 +59,8 @@ const now = atom({ plugin: 'session-band', key: 'now' } as const, 0)
 const body = atom({ plugin: 'session-band', key: 'body' } as const, null)
 // The pane is open: the band's button (register.tsx) reads it for its label.
 const isPaneOpen = atom({ plugin: 'session-band', key: 'isPaneOpen' } as const, false)
+// The header's figures a resumed session showed before, from `$.store`.
+const carried = atom({ plugin: 'session-band', key: 'carried' } as const, null)
 
 // Catppuccin Mocha, the band's own hues (register.tsx): every item "Label: value", the
 // label in the item's hue, the value bold, items split by a muted " · ".
@@ -173,6 +175,18 @@ const fmtDuration = (ms: number): string => {
 // collapses runs of ordinary ones.
 const TIME_CELLS = 5
 const timeCell = (ms: number): string => fmtDuration(ms).padStart(TIME_CELLS, '\u00a0')
+
+// When a prompt was sent, in local time, always five cells so the prompts' text lines up:
+// "14:32". Its day is a rule above the prompts of another day than the one above them.
+const fmtSentAt = (ms: number): string => {
+  const d = new Date(ms)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+const fmtDay = (ms: number): string => {
+  const d = new Date(ms)
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`
+}
+const dayOf = (ms: number): string => new Date(ms).toDateString()
 
 const estimate = (chars: number): number => (chars <= 0 ? 0 : Math.max(1, Math.round(chars / CHARS_PER_TOKEN)))
 
@@ -524,12 +538,135 @@ const isCacheRewrite = (s: Step): boolean =>
   s.cacheWrite >= REWRITE_MIN &&
   s.cacheWrite >= s.input / 2
 
+const failedOf = (list: Call[]) => list.filter(c => c.status === 'error' || c.status === 'denied').length
+
+/** The subagent an Agent call spawned, and what a subagent or a prompt cost with every subagent under it. */
+const costsOf = (allCalls: Call[], agentList: AgentRun[]) => {
+  // Matched by the call's id.
+  const runOf = (c: Call): AgentRun | undefined =>
+    c.tool === 'Agent' ? agentList.find(a => a.toolUseId === c.id) : undefined
+  const callsOf = (a: AgentRun): Call[] => (a.agentId ? allCalls.filter(c => c.agentId === a.agentId) : [])
+  const runCost = (a: AgentRun): number =>
+    callsOf(a).reduce((sum, c) => {
+      const child = runOf(c)
+      return child ? sum + runCost(child) : sum
+    }, a.costUsd)
+  // The main loop's requests and every subagent its Agent calls spawned. A prompt kept
+  // by the version that dropped cost has none: it counts nothing rather than NaN.
+  const promptCost = (p: Prompt): number =>
+    allCalls
+      .filter(c => c.turnId === p.turnId)
+      .reduce(
+        (sum, c) => {
+          const run = runOf(c)
+          return run ? sum + runCost(run) : sum
+        },
+        Number.isFinite(p.costUsd) ? p.costUsd : 0,
+      )
+  return { runOf, callsOf, runCost, promptCost }
+}
+
+const noTotals = (sessionId: string): Totals => ({
+  sessionId,
+  prompts: 0,
+  requests: 0,
+  tools: 0,
+  failed: 0,
+  durationMs: 0,
+  costUsd: 0,
+  tokens: 0,
+  output: 0,
+  mainInput: 0,
+  cacheRead: 0,
+})
+
+/**
+ * The header's figures over the rows the pane keeps, on top of `base`, what the session
+ * showed before this process. Every token the API processed, the main loop's requests and
+ * the subagents': input with its cache reads, and output.
+ */
+const totalsOf = (
+  base: Totals,
+  lists: { prompts: Prompt[]; steps: Step[]; calls: Call[]; agents: AgentRun[] },
+  at: number,
+): Totals => {
+  const { promptCost } = costsOf(lists.calls, lists.agents)
+  const mainCalls = lists.calls.filter(c => c.agentId === undefined)
+  const sum = <T,>(list: T[], of: (x: T) => number) => list.reduce((s, x) => s + of(x), 0)
+  const mainInput = sum(lists.steps, s => s.input ?? 0)
+  const mainOutput = sum(lists.steps, s => s.output ?? 0)
+  return {
+    sessionId: base.sessionId,
+    prompts: base.prompts + lists.prompts.length,
+    requests: base.requests + lists.steps.length,
+    tools: base.tools + mainCalls.length,
+    failed: base.failed + failedOf(mainCalls),
+    durationMs: base.durationMs + sum(lists.prompts, p => (p.endedAt ?? at) - p.startedAt),
+    costUsd: base.costUsd + sum(lists.prompts, promptCost),
+    tokens: base.tokens + mainInput + mainOutput + sum(lists.agents, a => a.tokens),
+    output: base.output + mainOutput + sum(lists.agents, a => a.output),
+    mainInput: base.mainInput + mainInput,
+    cacheRead: base.cacheRead + sum(lists.steps, s => s.cacheRead ?? 0),
+  }
+}
+
+// One small record per session in `$.store`, the most recently saved kept.
+const TOTALS_PREFIX = 'totals:'
+const MAX_SAVED_SESSIONS = 50
+
+async function readTotals($: EngineInterface): Promise<Totals> {
+  const [prompts_, steps_, calls_, agents_] = [
+    await read($, prompts),
+    await read($, steps),
+    await read($, calls),
+    await read($, agents),
+  ]
+  const base = (await read($, carried)) ?? noTotals(await $.session.id())
+  return totalsOf(base, { prompts: prompts_, steps: steps_, calls: calls_, agents: agents_ }, await $.clock.now())
+}
+
+/** Saves the header's figures under the session's id; a session with none saves nothing. */
+async function saveTotals($: EngineInterface, sessionId?: string): Promise<void> {
+  try {
+    const totals = await readTotals($)
+    const id = sessionId ?? totals.sessionId
+    if (totals.prompts === 0 && totals.tools === 0) return
+    const key = `${TOTALS_PREFIX}${id}`
+    // Removed first so it moves to the end of the store's insertion order: the oldest go.
+    await $.store.delete(key)
+    await $.store.set(key, { ...totals, sessionId: id })
+    const saved = (await $.store.keys()).filter(k => k.startsWith(TOTALS_PREFIX))
+    for (const old of saved.slice(0, Math.max(0, saved.length - MAX_SAVED_SESSIONS))) await $.store.delete(old)
+  } catch {
+    // The next turn's end saves them again.
+  }
+}
+
+/** The figures saved for this session, once per session id: a resume's, or none. */
+async function restoreTotals($: EngineInterface): Promise<void> {
+  try {
+    const id = await $.session.id()
+    if ((await read($, carried))?.sessionId === id) return
+    let saved: Totals | undefined
+    try {
+      const value = (await $.store.get(`${TOTALS_PREFIX}${id}`)) as Totals | undefined
+      if (value && typeof value === 'object' && value.sessionId === id) saved = { ...noTotals(id), ...value }
+    } catch {
+      // None to read: the header counts from now.
+    }
+    await update($, carried, () => saved ?? noTotals(id))
+  } catch {
+    // No id to read yet: the next second tries again.
+  }
+}
+
 // The band's own hooks call these on the events both parts follow: a plugin hooks an event
 // once without a matcher.
 
 /** `session.start`, after the engine's: the command and the clock of the running rows. */
 export async function startActivity($: EngineInterface): Promise<void> {
   await update($, isPaneOpen, () => false)
+  await restoreTotals($)
   await pruneBodies($)
   await markAlive($)
   $.clock.every(ALIVE_EVERY_MS, () => markAlive($))
@@ -541,8 +678,10 @@ export async function startActivity($: EngineInterface): Promise<void> {
     immediate: true,
   })
 
-  // Ticks the running clocks; quiet when nothing runs.
+  // Ticks the running clocks; quiet when nothing runs. A /resume in this process goes on
+  // under another id: its saved figures are read in the next second.
   $.clock.every(1000, async () => {
+    await restoreTotals($)
     const [c, a, p] = [await read($, calls), await read($, agents), await read($, prompts)]
     const isRunning =
       c.some(x => x.status === 'running') ||
@@ -676,6 +815,8 @@ export async function activityTurnComplete($: EngineInterface, e: TurnCompleteIn
             },
       ),
     )
+    // Saved at each answer too, so a session the process lost before its end keeps them.
+    await saveTotals($)
   }
   await update($, now, () => at)
 }
@@ -698,10 +839,12 @@ export const registerActivity: Register = on => {
     return {}
   })
 
-  // Exit, /clear, a resume: what the session showed is gone from view, so are its files.
-  // A /clear or a /resume goes on in this process under another id: the pane starts over.
+  // Exit, /clear, a resume: what the session showed is gone from view, so are its files;
+  // only the header's figures are saved, for a resume of it. A /clear or a /resume goes on
+  // in this process under another id: the pane starts over.
   on('session.end', async ($, e, next) => {
     const ended = await next(e)
+    await saveTotals($, e.sessionId)
     try {
       // Marked ended first: a removal the end's short time cuts off is the next start's.
       await markAlive($, e.sessionId, 0)
@@ -716,6 +859,7 @@ export const registerActivity: Register = on => {
       await update($, agents, () => [])
       await update($, view, v => ({ ...v, expanded: [], isFollowing: true, detail: undefined }))
       await update($, body, () => null)
+      await update($, carried, () => null)
     }
     return ended
   })
@@ -847,8 +991,6 @@ export const registerActivity: Register = on => {
           .flatMap((p, i) => (i ? [<Text key={`d${i}`} color={MUTED}>{' · '}</Text>, p] : [p]))}
       </Text>
     )
-    const failedOf = (list: Call[]) => list.filter(c => c.status === 'error' || c.status === 'denied').length
-
     const toggle = (key: string) =>
       update($, view, prev => ({
         ...prev,
@@ -869,16 +1011,7 @@ export const registerActivity: Register = on => {
     // Columns a row's left half has once `indent` cells in.
     const leftColumns = (indent: number) => Math.max(8, cols - indent - METRICS_COLUMNS - 3)
 
-    // The subagent an Agent call spawned, matched by the call's id.
-    const runOf = (c: Call): AgentRun | undefined =>
-      c.tool === 'Agent' ? agentList.find(a => a.toolUseId === c.id) : undefined
-    const callsOf = (a: AgentRun): Call[] => (a.agentId ? allCalls.filter(c => c.agentId === a.agentId) : [])
-    // A subagent's cost with every subagent it spawned in turn.
-    const runCost = (a: AgentRun): number =>
-      callsOf(a).reduce((sum, c) => {
-        const child = runOf(c)
-        return child ? sum + runCost(child) : sum
-      }, a.costUsd)
+    const { runOf, callsOf, runCost, promptCost } = costsOf(allCalls, agentList)
 
     // Ctx: ▰▱▱▱▱▱▱▱▱▱ 12% · 120k tok · ≈$0.05
     const ctxLine = (a: AgentRun) => {
@@ -1150,19 +1283,6 @@ export const registerActivity: Register = on => {
       )
     }
 
-    // The main loop's requests and every subagent its Agent calls spawned. A prompt kept
-    // by the version that dropped cost has none: it counts nothing rather than NaN.
-    const promptCost = (p: Prompt): number =>
-      allCalls
-        .filter(c => c.turnId === p.turnId)
-        .reduce(
-          (sum, c) => {
-            const run = runOf(c)
-            return run ? sum + runCost(run) : sum
-          },
-          Number.isFinite(p.costUsd) ? p.costUsd : 0,
-        )
-
     // The row tells prompts apart by what each cost; the context, which only grows from one
     // to the next, waits in the summary.
     // ▸ ❯ change the button icon    │   ≈$0.12 · 35s
@@ -1184,17 +1304,22 @@ export const registerActivity: Register = on => {
       const after = lastDone?.input !== undefined ? lastDone.input + (lastDone.output ?? 0) : undefined
       const price = cost > 0 ? `≈${fmtCost(cost)}` : ''
       const text = p.text ? oneLine(p.text) : '(continuation)'
-      const label = fit(`${isOpen ? '▾' : '▸'} ❯ ${text}`, leftColumns(0))
+      // When it was sent stands where the prompt mark was: "▸ 14:32 fix the scroll", the
+      // arrow in the separator's blue as the footer's ▴, the time lit while the prompt is
+      // open or runs.
+      const head = `${isOpen ? '▾' : '▸'} `
+      const sent = `${fmtSentAt(p.startedAt)} `
+      const label = fit(text, leftColumns(0) - head.length - sent.length)
       return (
         <Box key={p.turnId} flexDirection="column" marginBottom={isOpen ? 1 : 0}>
           <Box flexDirection="row" justifyContent="space-between" columnGap={1}>
-            <Button
-              key={p.turnId}
-              label={label}
-              plain
-              dimColor={!isOpen && !isRunning}
-              onPress={() => toggle(p.turnId)}
-            />
+            <Button key={p.turnId} plain dimColor={!isOpen && !isRunning} onPress={() => toggle(p.turnId)}>
+              <Text bold color={SEPARATOR}>
+                {head}
+              </Text>
+              <Text color={isOpen || isRunning ? TIME : MUTED}>{sent}</Text>
+              <Text>{label}</Text>
+            </Button>
             {metrics([
               needsLook && <Text key="look" color={WARN}>⚠ </Text>,
               price && <Text key="price" color={COST}>{price}</Text>,
@@ -1297,36 +1422,31 @@ export const registerActivity: Register = on => {
     const newest = [...promptList].reverse()
     const shownPrompts = v.expanded.includes(allKey('prompts')) ? newest : newest.slice(0, MAX_PROMPTS_SHOWN)
     const hiddenPrompts = newest.length - shownPrompts.length
-    // Over the prompts kept, in two lines:
+    // Over the prompts kept, and what a resumed session showed before this process, in
+    // three lines:
     // Session: 71 req · 214 tool · 3✗
     // Time: 1:32:10 · Cost: ≈$4.20
     // Token: 8.3M · Out: 42k · Cache hit: 97%
-    const mainCalls = allCalls.filter(c => c.agentId === undefined)
-    const sessionFailed = failedOf(mainCalls)
-    // Every token the API processed, the main loop's requests and the subagents': input with
-    // its cache reads, and output. Each request sends the conversation again, so it far
-    // outgrows the context. The cache hit is the main loop's input read from the cache.
-    const mainIn = stepList.reduce((sum, s) => sum + (s.input ?? 0), 0)
-    const mainOut = stepList.reduce((sum, s) => sum + (s.output ?? 0), 0)
-    const cacheRead = stepList.reduce((sum, s) => sum + (s.cacheRead ?? 0), 0)
-    const totalTokens = mainIn + mainOut + agentList.reduce((sum, a) => sum + a.tokens, 0)
-    const totalOut = mainOut + agentList.reduce((sum, a) => sum + a.output, 0)
-    const cacheHit = mainIn > 0 ? Math.round((cacheRead / mainIn) * 100) : undefined
-    const session = promptList.length > 0 && (
+    // Each request sends the conversation again, so the tokens far outgrow the context. The
+    // cache hit is the main loop's input read from the cache.
+    const before = (await read($, carried)) ?? noTotals('')
+    const t = totalsOf(before, { prompts: promptList, steps: stepList, calls: allCalls, agents: agentList }, at)
+    const cacheHit = t.mainInput > 0 ? Math.round((t.cacheRead / t.mainInput) * 100) : undefined
+    const session = (promptList.length > 0 || before.prompts > 0 || before.tools > 0) && (
       <Box key="session" flexDirection="column" marginBottom={1}>
         {items('count', [
-          item('req', 'Session', PROMPT, `${stepList.length} req`),
-          <Text key="tools" bold color={TOOL}>{`${mainCalls.length} tool`}</Text>,
-          sessionFailed > 0 && <Text key="failed" bold color={ALERT}>{`${sessionFailed}✗`}</Text>,
+          item('req', 'Session', PROMPT, `${t.requests} req`),
+          <Text key="tools" bold color={TOOL}>{`${t.tools} tool`}</Text>,
+          t.failed > 0 && <Text key="failed" bold color={ALERT}>{`${t.failed}✗`}</Text>,
         ])}
         {items('spent', [
-          item('time', 'Time', TIME, fmtDuration(promptList.reduce((sum, p) => sum + (p.endedAt ?? at) - p.startedAt, 0))),
-          item('cost', 'Cost', COST, `≈${fmtCost(promptList.reduce((sum, p) => sum + promptCost(p), 0))}`),
+          item('time', 'Time', TIME, fmtDuration(t.durationMs)),
+          item('cost', 'Cost', COST, `≈${fmtCost(t.costUsd)}`),
         ])}
-        {totalTokens > 0 &&
+        {t.tokens > 0 &&
           items('tokens', [
-            item('tokens', 'Token', CONTEXT, fmtTokens(totalTokens)),
-            item('out', 'Out', REQUEST, fmtTokens(totalOut)),
+            item('tokens', 'Token', CONTEXT, fmtTokens(t.tokens)),
+            item('out', 'Out', REQUEST, fmtTokens(t.output)),
             cacheHit !== undefined &&
               item('hit', 'Cache hit', TOOL, `${cacheHit}%`, cacheHit >= 80 ? OK : cacheHit >= 50 ? YELLOW : WARN),
           ])}
@@ -1337,9 +1457,25 @@ export const registerActivity: Register = on => {
       <Box flexDirection="column" paddingX={1}>
         {session}
         {subagents}
-        {promptList.length === 0 && <Text color={MUTED}>No prompts yet: send one to start.</Text>}
-        {shownPrompts.map(promptBlock)}
+        {promptList.length === 0 && before.prompts === 0 && <Text color={MUTED}>No prompts yet: send one to start.</Text>}
+        {shownPrompts.flatMap((p, i) => {
+          // Newest first: a rule names the day of the prompts below it, where it changes.
+          const above = i === 0 ? at : shownPrompts[i - 1]!.startedAt
+          if (dayOf(p.startedAt) === dayOf(above)) return [promptBlock(p)]
+          const day = `── ${fmtDay(p.startedAt)} `
+          return [
+            <Text key={`day:${p.turnId}`} wrap="truncate-end">
+              <Text color={RULE}>── </Text>
+              <Text color={MUTED}>{fmtDay(p.startedAt)}</Text>
+              <Text color={RULE}>{` ${'─'.repeat(Math.max(0, cols - day.length))}`}</Text>
+            </Text>,
+            promptBlock(p),
+          ]
+        })}
         {hiddenPrompts > 0 && unfold('prompts', `… ${hiddenPrompts} older prompts`)}
+        {before.prompts > 0 && (
+          <Text key="before" color={MUTED}>{`… ${before.prompts} prompts before the resume, counted above, not listed`}</Text>
+        )}
         {promptList.length > 0 && (
           // A rule, then the one button: ▴ in the separator's blue, its words in lavender,
           // dim while nothing is open.

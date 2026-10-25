@@ -56,6 +56,8 @@ test('a prompt lists its request, and the request its tool calls, on every surfa
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /Req:\s1\s·\sTool:\s1/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /^▾ \d{2}:\d{2} fix the scroll$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^── \d{2}\/\d{2} ─/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /In:\s41k\s·\sOut:\s300/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /App\.tsx/ })).toBeDefined()
     await ui.unmount()
@@ -74,6 +76,96 @@ test('a prompt lists its request, and the request its tool calls, on every surfa
   await ui.press({ key: 'back' })
   expect(await ui.find({ type: 'Text', text: /file body/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /Req:\s1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test("a resumed session's header goes on from its saved figures; its rows are only counted", async ($, on) => {
+  mock.clock(on)
+  const store = new Map<string, unknown>()
+  store.set('totals:sess-1', {
+    sessionId: 'sess-1',
+    prompts: 3,
+    requests: 5,
+    tools: 7,
+    failed: 1,
+    durationMs: 60_000,
+    costUsd: 1,
+    tokens: 50_000,
+    output: 1000,
+    mainInput: 40_000,
+    cacheRead: 30_000,
+  })
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => (store.set(e.key, e.value), { value: undefined }))
+  on('store.delete', (_, e) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [{ name: 'Read', input: { file_path: 'src/app/App.tsx' } }],
+      stopReason: 'tool_use' as const,
+      usage: USAGE,
+    }
+  })
+  on('tool.call', () => ({ result: {}, text: 'file body' }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Session:\s5\sreq\s·\s7\stool\s·\s1✗/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 prompts before the resume/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.turn.start({ turnId: 't1', text: 'fix the scroll' })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  for await (const _ of stream) {
+    // drained: the step ends with its result
+  }
+  await stream.result
+  await $.tool.call({ tool: 'Read', file_path: 'C:/repo/src/app/App.tsx' })
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer', usage: USAGE })
+
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Session:\s6\sreq\s·\s8\stool\s·\s1✗/ })).toBeDefined()
+  await ui.unmount()
+  // Saved at the answer: a later resume goes on from these.
+  expect(store.get('totals:sess-1')).toMatchObject({ prompts: 4, requests: 6, tools: 8, failed: 1 })
+
+  // A resume in this process: the pane starts over until the next session's figures are read.
+  await $.session.end({ reason: 'resume', sessionId: 'sess-1', resume: { id: 'sess-1' } } as Parameters<
+    typeof $.session.end
+  >[0])
+  expect(store.get('totals:sess-1')).toMatchObject({ prompts: 4, requests: 6 })
+})
+
+test('a rule names the day where the prompts listed cross midnight', async ($, on) => {
+  const clock = mock.clock(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  const ask = async (turnId: string) => {
+    await $.turn.start({ turnId, text: turnId })
+    await $.turn.complete({ turnId, answer: '', durationMs: 1000, isAborted: false, reason: 'answer' })
+  }
+
+  await ask('yesterday')
+  // No session started: no timer runs on the way to the next day.
+  await clock.set(clock.now() + 24 * 60 * 60_000)
+  await ask('today')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const before = new Date(clock.now() - 24 * 60 * 60_000)
+  const day = `${pad(before.getDate())}/${pad(before.getMonth() + 1)}`
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^── ${escapeRe(day)} ─+$`) })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /^▾ \d{2}:\d{2} today$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /^▸ \d{2}:\d{2} yesterday$/ })).toBeDefined()
   await ui.unmount()
 })
 
