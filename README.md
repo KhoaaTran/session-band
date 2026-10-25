@@ -84,6 +84,14 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ my thing" + C.r : "")
 
 `statusline.js` writes both. Without them the band still runs: the cache deadline is estimated from the last answer, and the limits come from the running session's `$.session.usage()`.
 
+### What the pane writes
+
+| Folder | For |
+|---|---|
+| `session-band/<session id>/` in a temporary folder only you read: `%TEMP%` on Windows, `$TMPDIR` on macOS, `$XDG_RUNTIME_DIR` (else `~/.cache`) on Linux | each tool call's whole input and output, one JSON file per call, and an `alive` mark the session renews every minute |
+
+The folder goes when its session ends (exit, `/clear`, a resume). A session's start removes the folders of sessions that ended without removing theirs, a killed one included, and leaves alone those another running session still marks. The session's state keeps only each call's first lines.
+
 ## Use
 
 | To | How |
@@ -92,7 +100,8 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ my thing" + C.r : "")
 | Keyboard shortcut | `Ctrl+X Ctrl+P` from the prompt (bound at install) |
 | Move into the pane | `Ctrl+X Tab`, then Tab and Enter; `Ctrl+X X` closes it |
 | Widen or narrow the pane | drag its edge, or `Ctrl+X ←`/`Ctrl+X →` from inside it |
-| Clear what is done | `/activity clear` |
+| See a tool call whole | press its row; `‹ Back` returns to it |
+| Clear what is done | `/activity clear`; `/clear` starts the pane over with the new conversation |
 | Preview the cache expiry notice | `/session-band demo <minutes>` |
 
 Pressing the band's button writes nothing to the transcript. Running `/activity` (the shortcut too) leaves one command line, about ten tokens.
@@ -115,7 +124,9 @@ Pressing the band's button writes nothing to the transcript. Running `/activity`
 
 Tools run while the model is still writing its reply, so a request's time is not `Wait + Write` plus its tools.
 
-An `Agent` row opens on the subagent it spawned: its context, cost and tool calls. A failed tool row opens on the first lines of its error. While a subagent's transcript is in view, the pane shows that subagent's calls only.
+An `Agent` row opens on the subagent it spawned: its context, cost and tool calls. While a subagent's transcript is in view, the pane shows that subagent's calls only.
+
+Any other tool row opens its own screen: status, time and result size, then `In` as the tool took it and `Out` whole, as the model read it. `In` is a shell's command as written, with any argument that changes its run (a timeout, a background run) as JSON under it, or another tool's arguments as JSON. A tool that answered with no text (ToolSearch, an image read) shows its result record, an image's data as its size. Colours and control characters are left out of what the screen draws, not of the file. Past 80,000 characters the screen names the file that holds the rest.
 
 The pane keeps the running session alone: up to 100 prompts, 300 requests, 1000 tool calls, 100 subagents.
 

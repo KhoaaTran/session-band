@@ -10,7 +10,7 @@ import type {
   TurnStepResult,
 } from 'claude-code'
 
-import type { AgentRun, Call, CallStatus, Prompt, Step, View } from '../types'
+import type { AgentRun, Call, CallBody, CallStatus, Prompt, Step, View } from '../types'
 
 // The band's full view: a pane of what the session does, opened from the band's button
 // beside Context, `/activity` or ctrl+x ctrl+p. Each prompt lists its requests to the model,
@@ -21,6 +21,8 @@ import type { AgentRun, Call, CallStatus, Prompt, Step, View } from '../types'
 // bar: the band shows it.
 
 const PANE = 'activity'
+// The key of a call's screen's Back button.
+const BACK = 'back'
 const TITLE = 'Activity'
 // Asked of the dock, which gives at most 45% of the terminal: the widest it allows.
 // A width the person dragged or keyed it to wins.
@@ -53,6 +55,8 @@ const view = atom(
   { shape: 'view-1' },
 )
 const now = atom({ plugin: 'session-band', key: 'now' } as const, 0)
+// The whole input and output of the call whose screen is open, read from its file.
+const body = atom({ plugin: 'session-band', key: 'body' } as const, null)
 // The pane is open: the band's button (register.tsx) reads it for its label.
 const isPaneOpen = atom({ plugin: 'session-band', key: 'isPaneOpen' } as const, false)
 
@@ -204,22 +208,26 @@ const printable = (text: string): string =>
     .map(line => (line.split('\r').filter(Boolean).at(-1) ?? '').replace(CONTROL, ''))
     .join('\n')
 
-// What an errored call answered, kept short: its first non-empty lines.
-const ERROR_LINES = 4
-const ERROR_CHARS = 400
-const errorOf = (text: string): string | undefined => {
+// What a call was given and what it answered, as the session's state keeps it: a few
+// first lines, for when its file is gone. The whole texts live in the call's file.
+const EXCERPT_LINES = 4
+const EXCERPT_CHARS = 400
+// What a call's screen reads from its file, input and output together: under the 100,000
+// characters a pane draws in all, so the line naming the file, last, still shows.
+const SCREEN_CHARS = 80_000
+const excerpt = (text: string): string | undefined => {
   const lines = printable(text)
     .split('\n')
     .map(line => line.trimEnd())
     .filter(Boolean)
-    .slice(0, ERROR_LINES)
+    .slice(0, EXCERPT_LINES)
   const kept = lines.join('\n')
-  return kept ? fit(kept, ERROR_CHARS) : undefined
+  return kept ? fit(kept, EXCERPT_CHARS) : undefined
 }
 
-const safeJson = (v: unknown): string => {
+const safeJson = (v: unknown, indent?: number): string => {
   try {
-    return typeof v === 'string' ? v : (JSON.stringify(v) ?? '')
+    return typeof v === 'string' ? v : (JSON.stringify(v, null, indent) ?? '')
   } catch {
     return ''
   }
@@ -263,6 +271,167 @@ const targetOf = (tool: string, input: Record<string, unknown>): string => {
       const first = Object.entries(input).find(([k, v]) => !RESERVED.has(k) && typeof v === 'string')
       return first ? oneLine(String(first[1])) : ''
     }
+  }
+}
+
+/**
+ * A call's input exactly as the tool takes it, so the same input to the same tool gives
+ * the same output again: any tool's arguments as JSON, a shell's command as written, to
+ * copy and run, with the arguments that change what it does (a timeout, a background
+ * run) as JSON under it. Left out: the engine's own fields, and a shell's description,
+ * which only names the call.
+ */
+const SHELLS = new Set(['Bash', 'PowerShell'])
+const fullInputOf = (tool: string, input: Record<string, unknown>): string => {
+  const args = Object.fromEntries(Object.entries(input).filter(([k, v]) => !RESERVED.has(k) && v !== undefined))
+  const command = args.command
+  if (!SHELLS.has(tool) || typeof command !== 'string') return safeJson(args, 2)
+  const rest = Object.fromEntries(Object.entries(args).filter(([k]) => k !== 'command' && k !== 'description'))
+  return Object.keys(rest).length ? `${command}\n\n${safeJson(rest, 2)}` : command
+}
+
+// A result record as JSON, for a tool that answers with no text. A long string that is
+// data rather than text (an image's base64) stands as its size: it cannot be read anyway.
+const DATA_CHARS = 2000
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+const recordOf = (result: unknown): string | undefined => {
+  if (result === undefined || result === null) return undefined
+  try {
+    const json = JSON.stringify(
+      result,
+      (_, v) => (typeof v === 'string' && v.length > DATA_CHARS && BASE64.test(v) ? `<${v.length} characters of base64 data>` : v),
+      2,
+    )
+    return json && json !== '{}' ? json : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Each call's whole input and output, one file per call in the session's own folder:
+// the state keeps only their first lines, so the session stays small.
+// A temporary folder only this user reads, on each OS: TEMP or TMP on Windows, TMPDIR on
+// macOS (ending in a slash). On Linux /tmp is every user's, and TMPDIR often names it:
+// XDG_RUNTIME_DIR, the user's own (cleared at logout), goes before it, ~/.cache after.
+// Each name is read as written: the engine lists the variables a module reads. The helpers
+// that take $ are function declarations, which the engine follows $ into from another file.
+async function tempDir($: EngineInterface): Promise<string> {
+  const home = (await $.env.get('HOME'))?.trim()
+  const dir = [
+    await $.env.get('TEMP'),
+    await $.env.get('TMP'),
+    await $.env.get('XDG_RUNTIME_DIR'),
+    await $.env.get('TMPDIR'),
+    home ? `${home}/.cache` : undefined,
+  ]
+    .map(v => v?.trim())
+    .find(Boolean)
+  return dir ? dir.replace(/\\/g, '/').replace(/\/+$/, '') || '/' : '/tmp'
+}
+
+// Every session's folder sits in one of the mod's own, so a start lists only those and
+// never the whole temporary folder.
+const BODY_ROOT = 'session-band'
+async function bodyRoot($: EngineInterface): Promise<string> {
+  return `${await tempDir($)}/${BODY_ROOT}`
+}
+
+async function sessionDir($: EngineInterface, sessionId?: string): Promise<string> {
+  return `${await bodyRoot($)}/${sessionId ?? (await $.session.id())}`
+}
+
+async function bodyPath($: EngineInterface, id: string): Promise<string> {
+  return `${await sessionDir($)}/${id.replace(/[^\w-]/g, '_')}.json`
+}
+
+// The files are kept only while the pane can show them. A session marks its folder alive
+// every minute and with each call's file, so a session that starts leaves another one's
+// that still runs alone; an ended session marks its own 0.
+const ALIVE_FILE = 'alive'
+const ALIVE_EVERY_MS = 60_000
+const STALE_MS = 10 * 60_000
+
+async function markAlive($: EngineInterface, sessionId?: string, at?: number): Promise<void> {
+  try {
+    await $.fs.write(`${await sessionDir($, sessionId)}/${ALIVE_FILE}`, String(at ?? (await $.clock.now())))
+  } catch {
+    // The next minute marks it again.
+  }
+}
+
+// `$.fs` deletes nothing: the system's own command removes the folder, rmdir on Windows
+// and rm on macOS and Linux. Only a session's folder in the mod's own is removed.
+async function removeDir($: EngineInterface, dir: string): Promise<void> {
+  if (!new RegExp(`/${BODY_ROOT}/[\\w-]+$`).test(dir)) return
+  try {
+    const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    await $.process.run(
+      isWindows ? ['cmd', '/c', 'rmdir', '/s', '/q', dir.replace(/\//g, '\\')] : ['rm', '-rf', '--', dir],
+      { timeoutMs: 5000 },
+    )
+  } catch {
+    // Left for the next session's start.
+  }
+}
+
+/**
+ * At a session's start: the folders of sessions that ended (or were killed before their
+ * end ran), and this session's own when the pane shows none of its calls (a resume in a
+ * new process). A hot reload keeps the calls in view, so it keeps their folder.
+ */
+async function pruneBodies($: EngineInterface): Promise<void> {
+  let root: string
+  let own: string
+  let entries: Awaited<ReturnType<typeof $.fs.list>>
+  try {
+    root = await bodyRoot($)
+    own = await $.session.id()
+    entries = await $.fs.list(root)
+  } catch {
+    // No folder yet, or none to read: nothing to prune now, the next start tries again.
+    return
+  }
+  const hasCalls = (await read($, calls)).length > 0
+  const at = await $.clock.now()
+  for (const entry of entries) {
+    // A link is no folder of the mod's: `kind` is `other` for one.
+    if (entry.kind !== 'dir') continue
+    const dir = `${root}/${entry.name}`
+    if (entry.name === own) {
+      if (!hasCalls) await removeDir($, dir)
+      continue
+    }
+    // 0, or no mark: its session ended, or its folder is not one a session marks. A folder
+    // never stands unmarked while its session runs: the mark is written before any file.
+    let aliveAt = 0
+    try {
+      aliveAt = Number(await $.fs.read(`${dir}/${ALIVE_FILE}`)) || 0
+    } catch {
+      // No mark.
+    }
+    if (aliveAt === 0 || at - aliveAt > STALE_MS) await removeDir($, dir)
+  }
+}
+
+// Past what a pane draws, a text ends on how much is left and where the whole of it is,
+// cut between characters, never between the two halves of an emoji.
+const cutAt = (text: string | undefined, room: number, path: string): string | undefined => {
+  if (text === undefined || text.length <= room) return text
+  const end = /[\uD800-\uDBFF]/.test(text.charAt(room - 1)) ? room - 1 : room
+  return `${text.slice(0, end)}\n… ${text.length - end} more characters, whole in ${path}`
+}
+
+async function readBody($: EngineInterface, id: string): Promise<CallBody> {
+  try {
+    const path = await bodyPath($, id)
+    const kept = JSON.parse(await $.fs.read(path)) as { input?: string; output?: string }
+    // The input first (it is short but for a Write's content), the output in the rest.
+    const input = cutAt(kept.input, SCREEN_CHARS / 5, path)
+    const output = cutAt(kept.output, SCREEN_CHARS - (input?.length ?? 0), path)
+    return { id, input, output, isWhole: true }
+  } catch {
+    // No file: a call made before this version, a write that failed, or one over 4 MiB.
+    return { id, isWhole: false }
   }
 }
 
@@ -361,6 +530,9 @@ const isCacheRewrite = (s: Step): boolean =>
 /** `session.start`, after the engine's: the command and the clock of the running rows. */
 export async function startActivity($: EngineInterface): Promise<void> {
   await update($, isPaneOpen, () => false)
+  await pruneBodies($)
+  await markAlive($)
+  $.clock.every(ALIVE_EVERY_MS, () => markAlive($))
   await $.command.register({
     name: 'activity',
     description: 'Show or hide the activity pane: requests, tool calls and subagents per prompt (clear)',
@@ -526,6 +698,28 @@ export const registerActivity: Register = on => {
     return {}
   })
 
+  // Exit, /clear, a resume: what the session showed is gone from view, so are its files.
+  // A /clear or a /resume goes on in this process under another id: the pane starts over.
+  on('session.end', async ($, e, next) => {
+    const ended = await next(e)
+    try {
+      // Marked ended first: a removal the end's short time cuts off is the next start's.
+      await markAlive($, e.sessionId, 0)
+      await removeDir($, await sessionDir($, e.sessionId))
+    } catch {
+      // Its folder waits for the next session's start.
+    }
+    if (e.reason === 'clear' || e.reason === 'resume') {
+      await update($, prompts, () => [])
+      await update($, steps, () => [])
+      await update($, calls, () => [])
+      await update($, agents, () => [])
+      await update($, view, v => ({ ...v, expanded: [], isFollowing: true, detail: undefined }))
+      await update($, body, () => null)
+    }
+    return ended
+  })
+
   // Closed by the person (its close mark, ctrl+x x) or on unload: the button says so.
   on('ui.close', async ($, e, next) => {
     const closed = await next(e)
@@ -541,10 +735,12 @@ export const registerActivity: Register = on => {
     const isMain = e.agentId === undefined
     const turnId = isMain ? (await read($, prompts)).at(-1)?.turnId : undefined
     const step = isMain ? (await read($, steps)).findLast(s => s.turnId === turnId)?.n : undefined
+    const fullInput = fullInputOf(e.tool, e as unknown as Record<string, unknown>)
     const call: Call = {
       id,
       tool: e.tool,
       target: targetOf(e.tool, e as unknown as Record<string, unknown>),
+      input: excerpt(fullInput),
       turnId,
       agentId: e.agentId,
       step,
@@ -555,17 +751,35 @@ export const registerActivity: Register = on => {
     await update($, calls, list => [...list.filter(c => c.id !== id), call].slice(-MAX_CALLS))
     await update($, now, () => startedAt)
 
-    const finish = async (status: CallStatus, text: string) => {
+    // `isRecord`: the tool answered with no text (ToolSearch's tool references, Read's image),
+    // so its result record stands in, as the tool returned it.
+    const finish = async (status: CallStatus, text: string, isRecord = false) => {
       const endedAt = await $.clock.now()
-      const error = status === 'ok' ? undefined : errorOf(text)
+      const error = status === 'ok' ? undefined : excerpt(text)
+      const output = status === 'ok' ? excerpt(text) : undefined
       await update($, calls, list =>
-        list.map(c => (c.id === id ? { ...c, status, endedAt, resultChars: text.length, error } : c)),
+        list.map(c => (c.id === id ? { ...c, status, endedAt, resultChars: text.length, error, output, isRecord } : c)),
       )
+      // A failed write leaves the screen on the first lines the state keeps. The folder is
+      // marked alive first: after a /clear, the new id's has no mark until the minute's.
+      try {
+        await markAlive($)
+        await $.fs.write(await bodyPath($, id), JSON.stringify({ input: fullInput, output: text }))
+      } catch {
+        return
+      }
+      // Its screen was opened while it ran: it now has the answer.
+      if ((await read($, view)).detail === id) {
+        const whole = await readBody($, id)
+        await update($, body, () => whole)
+      }
     }
     try {
       const ran = await next(e)
       const status: CallStatus = ran.deny !== undefined ? 'denied' : ran.isError ? 'error' : 'ok'
-      await finish(status, ran.deny ?? ran.text ?? '')
+      const text = ran.deny ?? ran.text ?? ''
+      const record = text ? undefined : recordOf(ran.result)
+      await finish(status, record ?? text, record !== undefined)
       return ran
     } catch (err) {
       await finish('error', String(err))
@@ -686,21 +900,117 @@ export const registerActivity: Register = on => {
     // ▾ ✓ Agent Explore: find callers         01:10
     //     Ctx: ▰▱▱▱▱▱▱▱▱▱ 12% · 120k tok · ≈$0.05
     //     ✓ Grep scrollToTop               0s
+    // A call opens its own screen at its top, the keys' focus on Back; Back lands on the
+    // call's row again, wherever the list had scrolled to. The window moves after the
+    // redraw it waits for; one the site refuses (it holds no keys) leaves things as they are.
+    const reveal = async (key: string) => {
+      try {
+        await $.ui.scroll(key === BACK ? { to: 'start', in: PANE } : { to: { key }, in: PANE, block: 'center' })
+        await $.ui.focus({ requestId: PANE, key })
+      } catch {
+        // The press already did what it was for.
+      }
+    }
+    const openDetail = async (id: string) => {
+      await update($, view, prev => ({ ...prev, isFollowing: false, detail: id }))
+      await reveal(BACK)
+      const whole = await readBody($, id)
+      await update($, body, () => whole)
+    }
+    const closeDetail = async (id: string) => {
+      await update($, view, prev => ({ ...prev, detail: undefined }))
+      await update($, body, () => null)
+      await reveal(`a:${id}`)
+    }
+    const shownBody = await read($, body)
+
+    // In:
+    //   yarn type-check
+    // One Text a block, wrapped whole, never cut at the edge: a Box a line would spend the
+    // pane's room on keys. Cleaned again as drawn: an error stored before excerpt cleaned it.
+    const excerptBlock = (key: string, label: string, text: string, color?: string) => (
+      <Box key={key} flexDirection="column" marginTop={1}>
+        <Text color={MUTED}>{`${label}:`}</Text>
+        <Box marginLeft={2}>
+          <Text color={color} wrap="wrap">
+            {printable(text)}
+          </Text>
+        </Box>
+      </Box>
+    )
+
+    // ‹ Back
+    // ✗ PowerShell
+    // Status: error · Time: 2s · Result: 1.2k chars
+    // In: … Out: …
+    const detailScreen = (c: Call) => {
+      // The whole texts from the call's file; until it is read, or without one, the first lines.
+      const isRead = shownBody?.id === c.id
+      const whole = isRead && shownBody.isWhole ? shownBody : undefined
+      // A call made before input was kept still shows what its row named.
+      const input = whole ? whole.input : (c.input ?? (c.target || undefined))
+      const answer = whole ? whole.output : (c.error ?? c.output)
+      const isRunning = c.status === 'running'
+      const isCut = isRead && !whole && !isRunning && (input ?? answer) !== undefined
+      const ms = (c.endedAt ?? at) - c.startedAt
+      return (
+        <Box flexDirection="column">
+          <Button key={BACK} label="‹ Back" plain onPress={() => closeDetail(c.id)} />
+          <Box marginTop={1}>
+            <Text>
+              <Text color={CALL_COLOR[c.status]}>{c.status === 'running' ? frame : CALL_GLYPH[c.status]}</Text>
+              <Text bold color={TOOL}>{` ${c.tool}`}</Text>
+            </Text>
+          </Box>
+          {items('facts', [
+            item('status', 'Status', MUTED, c.status, CALL_COLOR[c.status]),
+            item('time', 'Time', TIME, fmtDuration(ms)),
+            c.endedAt !== undefined && item('result', 'Result', REQUEST, `${fmtTokens(c.resultChars)} chars`),
+          ])}
+          {isCut && (
+            <Box marginTop={1}>
+              <Text color={WARN} wrap="wrap">
+                Only the first lines are shown: the call's file could not be read (made before this
+                version of the mod, or over 4 MiB).
+              </Text>
+            </Box>
+          )}
+          {input && excerptBlock('in', 'In', input, SUB)}
+          {answer &&
+            excerptBlock(
+              'out',
+              c.isRecord ? 'Out (no text: the result record the tool returned)' : 'Out',
+              answer,
+              c.error !== undefined ? ALERT : undefined,
+            )}
+          {/* No answer to show: still to come, none given, or none kept. Nothing while it is read. */}
+          {!answer && (isRunning || isRead) && (
+            <Box marginTop={1}>
+              <Text color={MUTED} wrap="wrap">
+                {isRunning
+                  ? 'Out: still running; its answer shows here once it ends.'
+                  : whole
+                    ? 'Out: none; the tool answered with no text.'
+                    : 'Out: not kept; the call ran before this version of the mod loaded.'}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
     const callRow = (c: Call) => {
       const isRunning = c.status === 'running'
       const run = runOf(c)
-      // It opens on its subagent, or on what it answered when it failed.
-      const canOpen = run !== undefined || c.error !== undefined
+      // An Agent call opens on its subagent in place; any other call opens its own screen.
       const key = `a:${c.id}`
-      const isOpen = canOpen && v.expanded.includes(key)
+      const isOpen = run !== undefined && v.expanded.includes(key)
       const ms = (c.endedAt ?? at) - c.startedAt
       // Texts alone: a Fragment draws as a Box, which a Text may not hold.
       const head = [
-        canOpen ? (
-          <Text key="mark" color={MUTED}>
-            {isOpen ? '▾ ' : '▸ '}
-          </Text>
-        ) : null,
+        <Text key="mark" color={MUTED}>
+          {!run ? '› ' : isOpen ? '▾ ' : '▸ '}
+        </Text>,
         <Text key="glyph" color={CALL_COLOR[c.status]}>
           {isRunning ? frame : CALL_GLYPH[c.status]}
         </Text>,
@@ -712,29 +1022,15 @@ export const registerActivity: Register = on => {
       return (
         <Box key={c.id} flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between" columnGap={1}>
-            {canOpen ? (
-              <Button key={key} plain onPress={() => toggle(key)}>
-                {head}
-              </Button>
-            ) : (
-              <Text wrap="truncate-end">{head}</Text>
-            )}
+            <Button key={key} plain onPress={() => (run ? toggle(key) : openDetail(c.id))}>
+              {head}
+            </Button>
             {metrics([
               <Text key="took" color={isRunning ? YELLOW : ms >= SLOW_MS ? WARN : MUTED}>
                 {timeCell(ms)}
               </Text>,
             ])}
           </Box>
-          {!run && isOpen && c.error && (
-            <Box flexDirection="column" marginLeft={2}>
-              {/* Cleaned again as drawn: an error stored before errorOf cleaned it. */}
-              {printable(c.error).split('\n').map((line, i) => (
-                <Text key={`e${i}`} color={ALERT} wrap="truncate-end">
-                  {line}
-                </Text>
-              ))}
-            </Box>
-          )}
           {run && isOpen && (
             <Box flexDirection="column" marginLeft={2}>
               {ctxLine(run)}
@@ -765,6 +1061,9 @@ export const registerActivity: Register = on => {
         </Box>
       )
     }
+
+    const detailed = v.detail !== undefined ? allCalls.find(c => c.id === v.detail) : undefined
+    if (detailed) return detailScreen(detailed)
 
     // A subagent's transcript in view: its own calls.
     const viewed = e.props.view.agentId

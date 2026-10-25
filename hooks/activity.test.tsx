@@ -14,6 +14,8 @@ const PANE = {
   },
 } as const
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 const USAGE = {
   input_tokens: 200,
   output_tokens: 300,
@@ -58,6 +60,21 @@ test('a prompt lists its request, and the request its tool calls, on every surfa
     expect(await ui.find({ type: 'Text', text: /App\.tsx/ })).toBeDefined()
     await ui.unmount()
   }
+
+  // Every call opens its own screen, on what it was given and what it answered; Back
+  // returns to the list.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /file body/ })).toBeUndefined()
+  const readKey = (await ui.find({ type: 'Button', text: /App\.tsx/ }))?.key
+  expect(readKey).toBeDefined()
+  await ui.press({ key: readKey! })
+  expect(await ui.find({ type: 'Text', text: /"file_path": "C:\/repo\/src\/app\/App\.tsx"/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^file body$/m })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Req:\s1/ })).toBeUndefined()
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /file body/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Req:\s1/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('a subagent shows as a card while it runs', async ($, on) => {
@@ -257,9 +274,9 @@ test('a failed call whose output carries escape sequences still opens on its err
   const failedKey = (await ui.find({ type: 'Button', text: /npx skills --help/ }))?.key
   expect(failedKey).toBeDefined()
   await ui.press({ key: failedKey! })
-  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^docs and add <package>$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^100%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/m })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^docs and add <package>$/m })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^100%$/m })).toBeDefined()
   await ui.unmount()
 })
 
@@ -300,9 +317,331 @@ test('an error stored with escape sequences by an earlier version still opens', 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 't1' })
   await ui.press({ key: 'a:c1' })
-  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Usage: skills <command>$/m })).toBeDefined()
   await ui.unmount()
 })
+
+test("a call's screen holds its whole input and output, past the lines the list keeps", async ($, on) => {
+  mock.clock(on)
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [{ name: 'Grep', input: { pattern: 'x' } }],
+      stopReason: 'tool_use' as const,
+      usage: USAGE,
+    }
+  })
+  // The call's file: the session's folder under TEMP, held in memory.
+  const files = new Map<string, string>()
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'TEMP' ? 'C:\\tmp' : undefined }))
+  on('fs.write', (_, e) => {
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('fs.read', (_, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  const lines = Array.from({ length: 60 }, (_, i) => `match ${i + 1}`)
+  on('tool.call', () => ({ result: {}, text: lines.join('\n') }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't1', text: 'search' })
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  for await (const _ of stream) {
+    // drained
+  }
+  await stream.result
+  const pattern = 'const targetOf|MAX_CALLS =|e\\.tool_use_id|ENVELOPE|const toolName'.repeat(3)
+  await $.tool.call({ tool: 'Grep', pattern, output_mode: 'content' } as Parameters<typeof $.tool.call>[0])
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer', usage: USAGE })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // The call's row, not its request's (#1 1× Grep).
+  const key = (await ui.find({ type: 'Button', text: /✓ Grep/ }))?.key
+  expect(key).toBeDefined()
+  await ui.press({ key: key! })
+  expect(await ui.find({ type: 'Text', text: new RegExp(escapeRe(`  "pattern": ${JSON.stringify(pattern)},`)) })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^match 60$/m })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Only the first lines/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// Each tool's input and answer as the session hands them over, with the texts a pane
+// cannot draw as they are: tabs, ANSI colours, a bell, an image's base64, no text at all.
+const TOOL_CASES = [
+  {
+    args: { tool: 'Read', file_path: 'C:/probe/tool-probe.txt' },
+    row: /Read tool-probe\.txt/,
+    answer: { result: {}, text: '1\tline one\n2\ttiếng Việt có dấu 🙂\n3\t\ttab-indented line' },
+    shows: [/"file_path": "C:\/probe\/tool-probe\.txt"/, /^2 tiếng Việt có dấu 🙂$/m, /^3  tab-indented line$/m],
+  },
+  {
+    args: { tool: 'Read', file_path: 'C:/probe/shot.png' },
+    row: /Read shot\.png/,
+    answer: { result: { type: 'image', file: { base64: 'iVBORw0KGgo'.repeat(400), type: 'image/png' } }, text: '' },
+    shows: [/Out \(no text/, /"base64": "<4400 characters of base64 data>"/, /"type": "image\/png"/],
+  },
+  {
+    args: { tool: 'ToolSearch', query: 'select:WebSearch', max_results: 1 },
+    row: /ToolSearch select:WebSearch/,
+    answer: { result: { matches: ['WebSearch'], query: 'select:WebSearch' }, text: '' },
+    shows: [/Out \(no text/, /^\s*"WebSearch"$/m],
+  },
+  {
+    // The command as written to copy, then what changes its run; never its description.
+    args: { tool: 'Bash', command: "printf 'bash ok\\n\\033[32mgreen\\033[0m\\n'", description: 'Print', timeout: 5000 },
+    row: /Bash printf/,
+    // Colours, a bell, a terminal link (OSC 8) and a progress line redrawn with \r.
+    answer: {
+      result: {},
+      text: 'bash ok\n\x1b[32mgreen\x1b[0m\x07\n\x1b]8;;https://x.dev\x07link\x1b]8;;\x07\n10%\r50%\r100%',
+    },
+    shows: [
+      /^printf 'bash ok\\n\\033\[32mgreen\\033\[0m\\n'\n\n\{\n {2}"timeout": 5000\n\}$/,
+      /^green$/m,
+      /^link$/m,
+      /^100%$/m,
+    ],
+  },
+  {
+    args: { tool: 'Edit', file_path: 'C:/probe/a.ts', old_string: 'const a = 1\nconst b = 2', new_string: 'const a = 3' },
+    row: /Edit a\.ts/,
+    answer: { result: {}, text: 'The file C:/probe/a.ts has been updated successfully.' },
+    shows: [/"old_string": "const a = 1\\nconst b = 2"/, /has been updated successfully/],
+  },
+  {
+    args: { tool: 'WebFetch', url: 'https://example.com', prompt: 'What is the title?' },
+    row: /WebFetch https:\/\/example\.com/,
+    answer: { result: {}, text: '**Page title:** "Example Domain"' },
+    shows: [/"prompt": "What is the title\?"/, /Example Domain/],
+  },
+  {
+    args: { tool: 'WebSearch', query: 'Claude Code plugins', mode: 'standard' },
+    row: /WebSearch Claude Code plugins/,
+    answer: { result: {}, text: 'Web search results for query: "Claude Code plugins"\n\nLinks: [{"title":"Plugins"}]' },
+    shows: [/"mode": "standard"/, /^Links: \[\{"title":"Plugins"\}\]$/m],
+  },
+  {
+    args: { tool: 'Glob', pattern: 'hooks/*.tsx', path: 'C:/mod' },
+    row: /Glob hooks\/\*\.tsx/,
+    answer: { result: {}, text: 'C:/mod/hooks/register.tsx\nC:/mod/hooks/activity.tsx' },
+    shows: [/"pattern": "hooks\/\*\.tsx"/, /^C:\/mod\/hooks\/activity\.tsx$/m],
+  },
+  {
+    args: { tool: 'Grep', pattern: 'const BODY_ROOT', path: 'C:/mod/hooks', output_mode: 'content', '-n': true },
+    row: /Grep const BODY_ROOT/,
+    answer: { result: {}, text: "activity.tsx:292:const BODY_ROOT = 'session-band'" },
+    shows: [/"-n": true/, /^activity\.tsx:292:const BODY_ROOT = 'session-band'$/m],
+  },
+  {
+    args: { tool: 'mcp__claude_ai_Claude_Docs__guide', items: ['topic.index'] },
+    row: /guide/,
+    // Past what a pane draws: the screen ends on how much is left and the file that holds it.
+    answer: { result: {}, text: `# topic.index\n${'Docs are living documents.\n'.repeat(5000)}` },
+    shows: [/^\s*"topic\.index"$/m, /^# topic\.index$/m, /^… \d+ more characters, whole in .+\/session-band\/s1\/.+\.json$/m],
+  },
+  {
+    args: { tool: 'Write', file_path: 'C:/probe/denied.txt', content: 'x' },
+    row: /Write denied\.txt/,
+    answer: { deny: 'Permission to write denied.txt was refused' },
+    shows: [/Status: denied/, /^Permission to write denied\.txt was refused$/m],
+  },
+] as const
+
+test('every kind of tool opens on its whole input and output', async ($, on) => {
+  mock.clock(on)
+  const files = new Map<string, string>()
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'TEMP' ? 'C:\\tmp' : undefined }))
+  on('fs.write', (_, e) => {
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('fs.read', (_, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  // The case whose every argument the call carries.
+  on('tool.call', (_, e) => {
+    const args = e as unknown as Record<string, unknown>
+    const found = TOOL_CASES.find(c => Object.entries(c.args).every(([k, v]) => JSON.stringify(args[k]) === JSON.stringify(v)))
+    if (!found) throw new Error(`no case for ${e.tool}`)
+    return found.answer as never
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't1', text: 'every tool' })
+  for (const c of TOOL_CASES) await $.tool.call(c.args as unknown as Parameters<typeof $.tool.call>[0])
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    for (const c of TOOL_CASES) {
+      const key = (await ui.find({ type: 'Button', text: c.row }))?.key
+      expect({ tool: c.args.tool, key }).toEqual({ tool: c.args.tool, key: expect.any(String) })
+      await ui.press({ key: key! })
+      for (const shown of c.shows) {
+        expect({ tool: c.args.tool, shown: String(shown), found: Boolean(await ui.find({ type: 'Text', text: shown })) }).toEqual({
+          tool: c.args.tool,
+          shown: String(shown),
+          found: true,
+        })
+      }
+      await ui.press({ key: 'back' })
+    }
+    await ui.unmount()
+  }
+})
+
+// What each OS sets: Windows TEMP and TMP, macOS a TMPDIR ending in a slash, Linux often none.
+const OS_ENVS = [
+  {
+    os: 'windows',
+    env: { OS: 'Windows_NT', TEMP: 'C:\\Users\\me\\AppData\\Local\\Temp', TMP: 'C:\\Users\\me\\AppData\\Local\\Temp' },
+    dir: 'C:/Users/me/AppData/Local/Temp',
+  },
+  { os: 'macos', env: { TMPDIR: '/var/folders/x1/abc/T/' }, dir: '/var/folders/x1/abc/T' },
+  // Linux's /tmp is every user's: the user's runtime folder first, then their cache.
+  { os: 'linux', env: { HOME: '/home/me', XDG_RUNTIME_DIR: '/run/user/1000' }, dir: '/run/user/1000' },
+  { os: 'linux without a runtime folder', env: { HOME: '/home/me' }, dir: '/home/me/.cache' },
+  { os: 'a system with no folder set', env: {}, dir: '/tmp' },
+] as const
+
+for (const { os, env, dir } of OS_ENVS) {
+  test(`a call's file goes in the temporary folder on ${os}`, async ($, on) => {
+    mock.clock(on)
+    const files = new Map<string, string>()
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('env.get', (_, e) => ({ value: (env as Record<string, string>)[e.name] }))
+    on('fs.write', (_, e) => {
+      files.set(e.path, e.text)
+      return { value: undefined }
+    })
+    on('fs.read', (_, e) => {
+      const text = files.get(e.path)
+      if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+      return { value: text }
+    })
+    on('tool.call', () => ({ result: {}, text: 'line 1\nline 2' }))
+
+    await $.tool.call({ tool: 'Bash', command: 'echo "a b" | wc -w' })
+
+    // The engine resolves the path on the OS the test runs on: on Windows `/tmp` is `C:\tmp`.
+    // Beside the call's file, the folder's alive mark.
+    const written = [...files.entries()].map(([p, text]) => [p.replace(/\\/g, '/'), text] as const)
+    const drive = /^[A-Za-z]:/.test(dir) ? '' : '(?:[A-Za-z]:)?'
+    const folder = `^${drive}${escapeRe(dir)}/session-band/sess-1/`
+    expect(written.map(([p]) => p.split('/').at(-1)?.replace(/^[\w-]+\.json$/, '<call>.json')).sort()).toEqual([
+      '<call>.json',
+      'alive',
+    ])
+    for (const [p] of written) expect(p).toMatch(new RegExp(folder))
+    const [, text] = written.find(([p]) => p.endsWith('.json')) ?? []
+    const kept = JSON.parse(text ?? '{}') as { input?: string; output?: string }
+    expect(kept.input).toBe('echo "a b" | wc -w')
+    expect(kept.output).toBe('line 1\nline 2')
+  })
+
+  test(`only the files of calls still in view are kept, on ${os}`, async ($, on) => {
+    const clock = mock.clock(on)
+    // A temporary folder in memory, keyed by the mod's own spelling: the engine resolves a
+    // path on the OS the test runs on (on Windows `/tmp` is `C:\tmp`), so the drive goes.
+    const native = /^[A-Za-z]:/.test(dir)
+    const norm = (p: string) => {
+      const slashed = p.replace(/\\/g, '/')
+      return native ? slashed : slashed.replace(/^[A-Za-z]:(?=\/)/, '')
+    }
+    const files = new Map<string, string>()
+    const removed: string[][] = []
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('env.get', (_, e) => ({ value: (env as Record<string, string>)[e.name] }))
+    on('fs.write', (_, e) => {
+      files.set(norm(e.path), e.text)
+      return { value: undefined }
+    })
+    on('fs.read', (_, e) => {
+      const text = files.get(norm(e.path))
+      if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+      return { value: text }
+    })
+    on('fs.list', (_, e) => {
+      const parent = norm(e.path)
+      const names = new Set([...files.keys()].filter(p => p.startsWith(`${parent}/`)).map(p => p.slice(parent.length + 1).split('/')[0]!))
+      return {
+        value: [...names].map(name => ({
+          name,
+          kind: files.has(`${parent}/${name}`) ? ('file' as const) : ('dir' as const),
+          size: 0,
+          mtimeMs: 0,
+          isLink: false,
+        })),
+      }
+    })
+    on('process.run', (_, e) => {
+      removed.push([...e.argv])
+      const target = norm(e.argv.at(-1)!)
+      for (const p of [...files.keys()]) if (p.startsWith(`${target}/`)) files.delete(p)
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('command.register', () => ({ value: { command: 'activity' } }))
+    on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+    on('tool.call', () => ({ result: {}, text: 'done' }))
+
+    const root = `${dir}/session-band`
+    const now = clock.now()
+    // A session that ended long ago, one that still runs in another window, one whose end
+    // marked it but could not remove it, and a file of another app's beside the mod's folder.
+    files.set(`${root}/gone/a.json`, '{}')
+    files.set(`${root}/gone/alive`, String(now - 60 * 60_000))
+    files.set(`${root}/live/b.json`, '{}')
+    files.set(`${root}/live/alive`, String(now - 60_000))
+    files.set(`${root}/ended/c.json`, '{}')
+    files.set(`${root}/ended/alive`, '0')
+    files.set(`${dir}/other-app/d.txt`, 'kept')
+    // This session's own, from before a resume in a new process: the pane shows none of it.
+    files.set(`${root}/sess-1/old.json`, '{}')
+
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+    const rm = (name: string) =>
+      os === 'windows'
+        ? ['cmd', '/c', 'rmdir', '/s', '/q', `${root}/${name}`.replace(/\//g, '\\')]
+        : ['rm', '-rf', '--', `${root}/${name}`]
+    expect(removed).toEqual(expect.arrayContaining([rm('gone'), rm('ended'), rm('sess-1')]))
+    expect(removed).toHaveLength(3)
+    expect(files.has(`${root}/live/b.json`)).toBe(true)
+    expect(files.has(`${dir}/other-app/d.txt`)).toBe(true)
+    // This session marks its own folder alive.
+    expect(files.has(`${root}/sess-1/alive`)).toBe(true)
+
+    // A /clear: the pane starts over and the folder goes with what it showed.
+    await $.tool.call({ tool: 'Bash', command: 'ls' })
+    expect([...files.keys()].some(p => p.startsWith(`${root}/sess-1/toolu`))).toBe(true)
+    await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: { id: 'sess-1' } } as Parameters<
+      typeof $.session.end
+    >[0])
+    expect(removed.at(-1)).toEqual(rm('sess-1'))
+    expect([...files.keys()].some(p => p.startsWith(`${root}/sess-1/`))).toBe(false)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ type: 'Button', text: /Bash/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
 
 test('the folded older prompts open when pressed', async ($, on) => {
   mock.clock(on)

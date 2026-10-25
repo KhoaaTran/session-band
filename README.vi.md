@@ -86,6 +86,14 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ việc riêng" + C.r : 
 
 `statusline.js` ghi ra cả hai. Thiếu chúng thì band vẫn chạy: hạn cache được ước tính từ câu trả lời gần nhất, và giới hạn lấy từ `$.session.usage()` của session đang chạy.
 
+### Pane ghi gì
+
+| Thư mục | Dùng để |
+|---|---|
+| `session-band/<session id>/` trong thư mục tạm chỉ bạn đọc được: `%TEMP%` trên Windows, `$TMPDIR` trên macOS, `$XDG_RUNTIME_DIR` (không có thì `~/.cache`) trên Linux | input và output đầy đủ của từng tool call, mỗi call một file JSON, cùng dấu `alive` mà session ghi lại mỗi phút |
+
+Thư mục bị xoá khi session kết thúc (thoát, `/clear`, resume). Khi một session khởi động, nó xoá thư mục của các session đã kết thúc mà chưa tự xoá được, kể cả session bị tắt ngang, và để yên thư mục mà một session khác vẫn đang ghi dấu. State của session chỉ giữ vài dòng đầu của mỗi call.
+
 ## Dùng
 
 | Việc | Cách |
@@ -94,7 +102,8 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ việc riêng" + C.r : 
 | Phím tắt | `Ctrl+X Ctrl+P` từ ô nhập prompt (gán lúc cài) |
 | Đi vào pane bằng bàn phím | `Ctrl+X Tab`, rồi Tab/Enter; `Ctrl+X X` để đóng |
 | Nới/thu pane | kéo mép pane, hoặc `Ctrl+X ←`/`Ctrl+X →` khi đang ở trong pane |
-| Xoá lịch sử đã xong | `/activity clear` |
+| Xem đầy đủ một tool call | bấm vào dòng của nó; `‹ Back` để quay lại đúng dòng đó |
+| Xoá lịch sử đã xong | `/activity clear`; `/clear` cho pane bắt đầu lại cùng hội thoại mới |
 | Thử thông báo cache sắp hết | `/session-band demo <phút>` |
 
 Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (kể cả qua phím tắt) để lại một dòng lệnh, khoảng chục token.
@@ -117,7 +126,9 @@ Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (k
 
 Tool chạy song song với lúc model đang viết câu trả lời, nên thời gian của request không bằng `Wait + Write` cộng thời gian các tool.
 
-Dòng `Agent` mở ra được, hiện context, chi phí và các tool call của subagent mà nó tạo. Dòng tool lỗi mở ra được, hiện vài dòng đầu của thông báo lỗi. Khi đang xem transcript của một subagent, pane chỉ hiện tool call của subagent đó.
+Dòng `Agent` mở ra được, hiện context, chi phí và các tool call của subagent mà nó tạo. Khi đang xem transcript của một subagent, pane chỉ hiện tool call của subagent đó.
+
+Các dòng tool khác mở ra màn riêng: trạng thái, thời gian, độ dài kết quả, rồi `In` đúng như tool nhận và `Out` đầy đủ như model đã đọc. `In` của shell là câu lệnh nguyên văn, kèm bên dưới dạng JSON các tham số làm đổi cách chạy (timeout, chạy nền); của tool khác là các tham số dạng JSON. Tool trả về không có chữ (ToolSearch, đọc ảnh) thì hiện bản ghi kết quả của tool, dữ liệu ảnh chỉ ghi kích thước. Màu và ký tự điều khiển bị bỏ khi vẽ lên màn hình, còn trong file vẫn giữ nguyên. Quá 80.000 ký tự thì màn hình ghi đường dẫn file chứa phần còn lại.
 
 Pane chỉ giữ dữ liệu của session đang chạy: tối đa 100 prompt, 300 request, 1000 tool call, 100 subagent.
 

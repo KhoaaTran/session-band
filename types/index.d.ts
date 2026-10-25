@@ -42,6 +42,26 @@ export type Call = {
   resultChars: number
   /** The first lines of what an errored or denied call answered. */
   error?: string
+  /** The first lines of the call's input, as `CallBody.input` writes it. */
+  input?: string
+  /** The first lines of what a call that ran answered. */
+  output?: string
+  /** The call answered with no text: `output` is its result record as JSON. */
+  isRecord?: boolean
+}
+
+/** The whole input and output of the call whose screen is open, from its file. */
+export type CallBody = {
+  id: string
+  /**
+   * The input exactly as the tool took it: a shell's command, with the arguments that
+   * change its run as JSON under it; any other tool's arguments as JSON.
+   */
+  input?: string
+  /** What the tool answered, as the model read it; its result record when it gave no text. */
+  output?: string
+  /** False when the call has no file: its screen keeps to the first lines `Call` holds. */
+  isWhole: boolean
 }
 
 /** One main-loop turn: a prompt and everything the model did for it. */
@@ -116,6 +136,8 @@ export type View = {
   /** Opens the newest request of the prompt in progress; a new prompt sets it, a press clears it. */
   isFollowing: boolean
   isDoneCollapsed: boolean
+  /** The call whose own screen is open, by its `Call.id`; the list when absent. */
+  detail?: string
 }
 
 declare module 'claude-code' {
@@ -132,6 +154,7 @@ declare module 'claude-code' {
       agents: Shaped<AgentRun[]>
       view: Shaped<View>
       now: number
+      body: CallBody | null
       isPaneOpen: boolean
     }
   }
