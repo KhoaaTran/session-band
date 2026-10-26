@@ -138,7 +138,7 @@ export type AgentRun = {
   status: AgentStatus
   startedAt: number
   endedAt?: number
-  contextTokens: number
+  contextUsed: number
   contextMax: number
   tokens: number
   /** Output tokens over every request of its run. */

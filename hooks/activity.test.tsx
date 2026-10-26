@@ -661,8 +661,8 @@ const TOOL_CASES = [
     shows: [/"old_string": "const a = 1\\nconst b = 2"/, /has been updated successfully/],
   },
   {
-    args: { tool: 'WebFetch', url: 'https://example.com', prompt: 'What is the title?' },
-    row: /WebFetch https:\/\/example\.com/,
+    args: { tool: 'WebFetch', url: 'docs/page', prompt: 'What is the title?' },
+    row: /WebFetch docs\/page/,
     answer: { result: {}, text: '**Page title:** "Example Domain"' },
     shows: [/"prompt": "What is the title\?"/, /Example Domain/],
   },

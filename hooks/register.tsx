@@ -37,7 +37,7 @@ import type {
 // the same file.
 
 // Responses shorter than this are mostly tool-call stubs: their timing is noise.
-const MIN_TOKENS = 20
+const MIN_OUTPUT = 20
 // A response that arrived in one burst cannot be timed; such readings are dropped.
 const MIN_SECONDS = 0.5
 const MAX_SPEED = 1000
@@ -76,7 +76,7 @@ const textBar = (percent: number) => {
 // One decimal, a trailing .0 dropped: 289.1k, 300k, 1m.
 const oneDecimal = (n: number) => n.toFixed(1).replace(/\.0$/, '')
 // From 999,950 the k form would round to "1000k".
-const tokens = (n: number) => (n >= 999_950 ?`${oneDecimal(n / 1e6)}m` : `${oneDecimal(n / 1e3)}k`)
+const fmtAmount = (n: number) => (n >= 999_950 ?`${oneDecimal(n / 1e6)}m` : `${oneDecimal(n / 1e3)}k`)
 
 // Local time: "13:00 24/10".
 const resetText = (iso: string) => {
@@ -202,7 +202,7 @@ export const register: Register = (on, options) => {
   // Set by `/session-band demo`, cleared by the next answer.
   let isDemo = false
   // Output tokens and streaming seconds of the main thread's current turn.
-  let turnTokens = 0
+  let turnOutput = 0
   let turnSeconds = 0
 
   on('session.start', async ($, e, next) => {
@@ -289,7 +289,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
-      turnTokens = 0
+      turnOutput = 0
       turnSeconds = 0
       await update($, stats, s => ({ ...s, turn: s.turn + 1 }))
       await update($, isBusy, () => true)
@@ -318,10 +318,10 @@ export const register: Register = (on, options) => {
         if (isMain && startedAt !== null && chunk.kind === 'stop' && chunk.usage !== null) {
           // Averaged over every request of the turn, so a short tool-call stub at the
           // end does not stand for the whole reply.
-          turnTokens += chunk.usage.output_tokens
+          turnOutput += chunk.usage.output_tokens
           turnSeconds += ((await $.clock.now()) - startedAt) / 1000
-          const speed = turnTokens / turnSeconds
-          if (turnTokens >= MIN_TOKENS && turnSeconds >= MIN_SECONDS && speed <= MAX_SPEED) {
+          const speed = turnOutput / turnSeconds
+          if (turnOutput >= MIN_OUTPUT && turnSeconds >= MIN_SECONDS && speed <= MAX_SPEED) {
             await update($, stats, s => ({ ...s, speed: Math.round(speed) }))
           }
         }
@@ -406,7 +406,7 @@ export const register: Register = (on, options) => {
     // A 5m cache on a subscription means ENABLE_PROMPT_CACHING_1H is not taking effect.
     const cacheNote = ttlSeconds !== CACHE_TTL_S ? ' (5m, 1h off)' : ''
     const ctxValue = u.context ? ` ${Math.round(u.context.percent)}%` : ' —'
-    const ctxTokens = u.context?.tokens != null ? ` (${tokens(u.context.tokens)}/${tokens(u.context.window)})` : ''
+    const ctxSize = u.context?.tokens != null ? ` (${fmtAmount(u.context.tokens)}/${fmtAmount(u.context.window)})` : ''
 
     // Each limit stays beside its left item while both fit with the gap between them;
     // otherwise the limits take rows of their own under the left items instead of being cut.
@@ -436,7 +436,7 @@ export const register: Register = (on, options) => {
     const GAP = 3
     const inner = e.props.bodyColumns - 2 - (level ? 2 : 0)
     const left1 = `Turn: ${s.turn}  ·  Cache: ${cacheText}${cacheNote}  ·  Speed: ${speedText}`
-    const left2 = `Context: ${bar.filled}${bar.empty}${ctxValue}${ctxTokens}  ${detailLabel}`
+    const left2 = `Context: ${bar.filled}${bar.empty}${ctxValue}${ctxSize}  ${detailLabel}`
     const isSideBySide =
       left1.length + GAP + limitParts('5h limit', u.fiveHour).text.length <= inner &&
       left2.length + GAP + limitParts('Weekly limit', u.weekly).text.length <= inner
@@ -460,7 +460,7 @@ export const register: Register = (on, options) => {
         <Text color={ctxColor}>{bar.filled}</Text>
         <Text color={MUTED}>{bar.empty}</Text>
         <Text bold color={ctxColor}>{ctxValue}</Text>
-        {ctxTokens ? <Text color={SUB}>{ctxTokens}</Text> : null}
+        {ctxSize ? <Text color={SUB}>{ctxSize}</Text> : null}
       </Text>
     )
 
@@ -535,14 +535,14 @@ const SLOW_MS = 30_000
 // Calls listed under one request, and prompts listed; the earlier ones fold into a line.
 const MAX_ROWS = 12
 const MAX_PROMPTS_SHOWN = 15
-const CHARS_PER_TOKEN = 4
+const AVG_CHARS = 4
 // A prompt's title as kept: wider than any row draws.
 const PROMPT_TITLE_CHARS = 300
 
 const calls = atom({ plugin: 'session-band', key: 'calls' } as const, [], { shape: 'calls-1' })
 const prompts = atom({ plugin: 'session-band', key: 'prompts' } as const, [], { shape: 'prompts-1' })
 const steps = atom({ plugin: 'session-band', key: 'steps' } as const, [], { shape: 'steps-1' })
-const agents = atom({ plugin: 'session-band', key: 'agents' } as const, [], { shape: 'agents-5' })
+const agents = atom({ plugin: 'session-band', key: 'agents' } as const, [], { shape: 'agents-6' })
 const view = atom(
   { plugin: 'session-band', key: 'view' } as const,
   { expanded: [], isFollowing: true, isDoneCollapsed: true },
@@ -687,10 +687,10 @@ const fmtDay = (ms: number): string => {
 }
 const dayOf = (ms: number): string => new Date(ms).toDateString()
 
-const estimate = (chars: number): number => (chars <= 0 ? 0 : Math.max(1, Math.round(chars / CHARS_PER_TOKEN)))
+const estimate = (chars: number): number => (chars <= 0 ? 0 : Math.max(1, Math.round(chars / AVG_CHARS)))
 
 const ctxOf = (a: AgentRun): number =>
-  a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0
+  a.contextMax ? Math.min(100, Math.round((a.contextUsed / a.contextMax) * 100)) : 0
 
 /** Cuts `text` to `width` cells with an ellipsis. */
 const fit = (text: string, width: number): string => {
@@ -1355,7 +1355,7 @@ async function activityStepEnd(
               effort: typeof e.effort === 'string' ? e.effort : a.effort,
               status: 'running',
               endedAt: undefined,
-              contextTokens: promptOf(usage) + (usage.output_tokens || 0),
+              contextUsed: promptOf(usage) + (usage.output_tokens || 0),
               contextMax: windowOf(model),
               tokens: a.tokens + promptOf(usage) + (usage.output_tokens || 0),
               output: a.output + (usage.output_tokens || 0),
@@ -1582,7 +1582,7 @@ const registerActivity: Register = on => {
       model: started.model,
       status: 'running',
       startedAt: at,
-      contextTokens: 0,
+      contextUsed: 0,
       contextMax: windowOf(started.model),
       tokens: 0,
       output: 0,
