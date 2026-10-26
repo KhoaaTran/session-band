@@ -654,7 +654,7 @@ const modelName = (id: string): string => {
 
 const runModel = (a: AgentRun): string => (a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model))
 
-const fmtTokens = (n: number): string =>
+const fmtCount = (n: number): string =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : `${Math.round(n)}`
 
 const fmtCost = (usd: number): string => `$${usd < 10 ? usd.toFixed(2) : usd.toFixed(1)}`
@@ -902,12 +902,14 @@ async function markAlive($: EngineInterface, sessionId?: string, at?: number): P
 // and rm on macOS and Linux. Only a session's folder in the mod's own is removed.
 async function removeDir($: EngineInterface, dir: string): Promise<void> {
   if (!new RegExp(`/${BODY_ROOT}/[\\w-]+$`).test(dir)) return
+  // Each command written whole at its call, the folder alone filled in: the plugin directory
+  // reads what a mod runs from the call as written.
   try {
-    const isWindows = (await $.env.get('OS')) === 'Windows_NT'
-    await $.process.run(
-      isWindows ? ['cmd', '/c', 'rmdir', '/s', '/q', dir.replace(/\//g, '\\')] : ['rm', '-rf', '--', dir],
-      { timeoutMs: 5000 },
-    )
+    if ((await $.env.get('OS')) === 'Windows_NT') {
+      await $.process.run(['cmd', '/c', 'rmdir', '/s', '/q', dir.replace(/\//g, '\\')], { timeoutMs: 5000 })
+    } else {
+      await $.process.run(['rm', '-rf', '--', dir], { timeoutMs: 5000 })
+    }
   } catch {
     // Left for the next session's start.
   }
@@ -1662,7 +1664,7 @@ const registerActivity: Register = on => {
           <Text color={usedLevel(ctx)}>{bar.filled}</Text>
           <Text color={MUTED}>{bar.empty}</Text>
           <Text bold color={usedLevel(ctx)}>{` ${ctx}%`}</Text>
-          <Text color={MUTED}>{` · ${fmtTokens(a.tokens)} tok · ≈${fmtCost(runCost(a))}`}</Text>
+          <Text color={MUTED}>{` · ${fmtCount(a.tokens)} tok · ≈${fmtCost(runCost(a))}`}</Text>
         </Text>
       )
     }
@@ -1760,7 +1762,7 @@ const registerActivity: Register = on => {
           {items('facts', [
             item('status', 'Status', MUTED, c.status, CALL_COLOR[c.status]),
             item('time', 'Time', TIME, fmtDuration(ms)),
-            c.endedAt !== undefined && item('result', 'Result', REQUEST, `${fmtTokens(c.resultChars)} chars`),
+            c.endedAt !== undefined && item('result', 'Result', REQUEST, `${fmtCount(c.resultChars)} chars`),
           ])}
           {isCut && (
             <Box marginTop={1}>
@@ -1885,7 +1887,7 @@ const registerActivity: Register = on => {
       const took = timeCell((isBusy ? at : endedAt) - s.startedAt)
       const needsLook = s.status === 'failed' || isCacheRewrite(s) || failedOf(own) > 0
       // The context the request left, beside its time.
-      const context = after !== undefined ? fmtTokens(after) : ''
+      const context = after !== undefined ? fmtCount(after) : ''
       const label = fit(`${isOpen ? '▾' : '▸'} #${s.seq ?? s.n} ${gist(s)}`, leftColumns(2))
       // Before the first item the wait (network, queue, reading the input), after it the writing.
       const timing =
@@ -1914,12 +1916,12 @@ const registerActivity: Register = on => {
             <Box flexDirection="column" marginLeft={2} marginBottom={1}>
               {own.length > 0 && callList(`c${s.n}`, own)}
               {items('io', [
-                item('in', 'In', CONTEXT, s.input !== undefined ? fmtTokens(s.input) : '…'),
-                item('out', 'Out', REQUEST, s.output !== undefined ? fmtTokens(s.output) : '…'),
+                item('in', 'In', CONTEXT, s.input !== undefined ? fmtCount(s.input) : '…'),
+                item('out', 'Out', REQUEST, s.output !== undefined ? fmtCount(s.output) : '…'),
               ])}
               {timing.length > 0 && items('time', timing)}
               {items('model', [item('model', 'Model', SUB, s.effort ? `${modelName(s.model)} · ${s.effort}` : modelName(s.model))])}
-              {isCacheRewrite(s) && <Text color={WARN}>{`⚠ cache written again ${fmtTokens(s.cacheWrite ?? 0)}`}</Text>}
+              {isCacheRewrite(s) && <Text color={WARN}>{`⚠ cache written again ${fmtCount(s.cacheWrite ?? 0)}`}</Text>}
               {s.isCompacted && <Text color={WARN}>compacted before this request</Text>}
             </Box>
           )}
@@ -1985,7 +1987,7 @@ const registerActivity: Register = on => {
                     'context',
                     'Context',
                     CONTEXT,
-                    fmtTokens(after),
+                    fmtCount(after),
                     usedLevel((after / windowOf(lastDone?.model ?? '')) * 100),
                   ),
                 p.isAborted && <Text key="aborted" color={ALERT}>stopped</Text>,
@@ -2131,8 +2133,8 @@ const registerActivity: Register = on => {
           ])}
           {t.tokens > 0 &&
             items('tokens', [
-              item('tokens', 'Token', CONTEXT, fmtTokens(t.tokens)),
-              item('out', 'Out', REQUEST, fmtTokens(t.output)),
+              item('tokens', 'Token', CONTEXT, fmtCount(t.tokens)),
+              item('out', 'Out', REQUEST, fmtCount(t.output)),
               cacheHit !== undefined &&
                 item('hit', 'Cache hit', TOOL, `${cacheHit}%`, cacheHit >= 80 ? OK : cacheHit >= 50 ? YELLOW : WARN),
             ])}

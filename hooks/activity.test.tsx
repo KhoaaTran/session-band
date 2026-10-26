@@ -498,7 +498,7 @@ test('a failed call whose output carries escape sequences still opens on its err
   on('tool.call', () => ({
     result: {},
     isError: true as const,
-    text: 'Exit code 255\n\x1b[1mUsage:\x1b[0m skills <command>\r\n\x1b]8;;https://x.dev\x07docs\x1b]8;;\x07 and\tadd <package>\n10%\r100%',
+    text: 'Exit code 255\n\x1b[1mUsage:\x1b[0m skills <command>\r\n\x1b]8;;docs/skills\x07docs\x1b]8;;\x07 and\tadd <package>\n10%\r100%',
   }))
   on('turn.complete', () => ({ text: '' }))
 
@@ -645,7 +645,7 @@ const TOOL_CASES = [
     // Colours, a bell, a terminal link (OSC 8) and a progress line redrawn with \r.
     answer: {
       result: {},
-      text: 'bash ok\n\x1b[32mgreen\x1b[0m\x07\n\x1b]8;;https://x.dev\x07link\x1b]8;;\x07\n10%\r50%\r100%',
+      text: 'bash ok\n\x1b[32mgreen\x1b[0m\x07\n\x1b]8;;docs/skills\x07link\x1b]8;;\x07\n10%\r50%\r100%',
     },
     shows: [
       /^printf 'bash ok\\n\\033\[32mgreen\\033\[0m\\n'\n\n\{\n {2}"timeout": 5000\n\}$/,
