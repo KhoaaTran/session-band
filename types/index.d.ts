@@ -73,6 +73,8 @@ export type CallBody = {
 /** One turn: a prompt and everything the model did for it; a subagent's run is one too. */
 export type Prompt = {
   turnId: string
+  /** The main loop's turn number in the session, those before a resume counted; absent on a subagent's. */
+  n?: number
   /** The subagent's loop it ran in; absent on the main loop. */
   agentId?: string
   /** Its row's title: the prompt on one line, a task notification as its summary, cut short. */

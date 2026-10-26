@@ -140,6 +140,15 @@ const priceOf = (model: string, prompt: number): Price => {
   return PRICES.find(([re]) => re.test(id))?.[1] ?? [4, 20, 0.2, 8]
 }
 
+/**
+ * What the next request pays to send a context again: read from the prompt cache while it
+ * holds, written to it again once it expired.
+ */
+const cacheTaxOf = (model: string, context: number): { warm: number; expired: number } => {
+  const [, , r, w] = priceOf(model, context)
+  return { warm: (context * r) / 1e6, expired: (context * w) / 1e6 }
+}
+
 // `isRequest` says the usage is one model request, which is what a prompt-length price
 // is set by; a turn's sum is priced at the model's ordinary prices.
 const costOf = (model: string, u: Usage, isRequest: boolean): number => {
@@ -781,8 +790,16 @@ export async function startActivity($: EngineInterface): Promise<void> {
 /** `turn.start`: a prompt opens a row, the main loop's or a subagent's run. */
 export async function activityTurnStart($: EngineInterface, e: TurnStartInput): Promise<void> {
   const at = await $.clock.now()
+  // The main loop's turns are numbered across the session, those before a resume counted.
+  let n: number | undefined
+  if (e.agentId === undefined) {
+    const main = (await read($, prompts)).filter(p => p.agentId === undefined)
+    const last = main.at(-1)?.n
+    n = last !== undefined ? last + 1 : ((await read($, carried))?.prompts ?? 0) + main.length + 1
+  }
   const prompt: Prompt = {
     turnId: e.turnId,
+    n,
     agentId: e.agentId,
     // Only its row's title is drawn: a long paste or brief is not kept whole in the state,
     // which every event reads (a subagent's task is whole in its file).
@@ -1487,6 +1504,7 @@ export const registerActivity: Register = on => {
           {isOpen && (
             <Box flexDirection="column" marginLeft={2}>
               {items('sum', [
+                p.n !== undefined && item('turn', 'Turn', PROMPT, String(p.n)),
                 item('req', 'Req', REQUEST, String(ownSteps.length)),
                 item('tools', 'Tool', TOOL, String(own.length)),
                 failed > 0 && item('failed', 'Failed', ALERT, String(failed)),
@@ -1610,13 +1628,23 @@ export const registerActivity: Register = on => {
     const newest = [...mainPrompts].reverse()
     const shownPrompts = v.expanded.includes(allKey('prompts')) ? newest : newest.slice(0, MAX_PROMPTS_SHOWN)
     const hiddenPrompts = newest.length - shownPrompts.length
-    // Three lines over a loop's rows, the session's or a subagent's:
+    // Cache tax: ≈$0.03 · expired: ≈$1.00
+    const taxLine = (tax: { warm: number; expired: number }) =>
+      items('tax', [
+        item('tax', 'Cache tax', COST, `≈${fmtCost(tax.warm)}`),
+        item('expired', 'expired', WARN, `≈${fmtCost(tax.expired)}`),
+      ])
+
+    // Three lines over a loop's rows, the session's or a subagent's, and the session's
+    // cache tax under them:
     // Session: 71 req · 214 tool · 3✗
     // Time: 1:32:10 · Cost: ≈$4.20
     // Token: 8.3M · Out: 42k · Cache hit: 97%
     // Each request sends the conversation again, so the tokens far outgrow the context. The
     // cache hit is the loop's input read from the cache.
-    const header = (key: string, label: string, t: Totals) => {
+    // `tax`: what going on from the main loop's context costs a request: one for the session,
+    // whose context every prompt shares.
+    const header = (key: string, label: string, t: Totals, tax?: { warm: number; expired: number }) => {
       const cacheHit = t.mainInput > 0 ? Math.round((t.cacheRead / t.mainInput) * 100) : undefined
       return (
         <Box key={key} flexDirection="column" marginBottom={1}>
@@ -1636,6 +1664,7 @@ export const registerActivity: Register = on => {
               cacheHit !== undefined &&
                 item('hit', 'Cache hit', TOOL, `${cacheHit}%`, cacheHit >= 80 ? OK : cacheHit >= 50 ? YELLOW : WARN),
             ])}
+          {tax && taxLine(tax)}
         </Box>
       )
     }
@@ -1765,7 +1794,11 @@ export const registerActivity: Register = on => {
     // Over the prompts kept, and what a resumed session showed before this process.
     const before = (await read($, carried)) ?? noTotals('')
     const t = totalsOf(before, { prompts: promptList, steps: stepList, calls: allCalls, agents: agentList }, at)
-    const session = (mainPrompts.length > 0 || before.prompts > 0 || before.tools > 0) && header('session', 'Session', t)
+    // Going on from the main loop's context now: its last answered request's.
+    const current = stepList.findLast(s => s.agentId === undefined && s.input !== undefined)
+    const tax = current?.input !== undefined ? cacheTaxOf(current.model, current.input + (current.output ?? 0)) : undefined
+    const session =
+      (mainPrompts.length > 0 || before.prompts > 0 || before.tools > 0) && header('session', 'Session', t, tax)
 
     return (
       <Box flexDirection="column" paddingX={1}>

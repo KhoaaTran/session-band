@@ -322,6 +322,11 @@ test("a subagent's screen is drawn as the session's list: its header, its runs, 
   expect(await ui.find({ type: 'Text', text: /^≈\$0\.02\s·\s{4}0s$/ })).toBeDefined()
   // The main loop's request names its own.
   expect(await ui.find({ type: 'Text', text: /Model:\sOpus 5\.5\s·\shigh/ })).toBeDefined()
+  // Its prompt's turn, and what going on from the 41.3k context costs a request: read from
+  // the cache at $0.20 a million, or written again at $8 once it expired.
+  expect(await ui.find({ type: 'Text', text: /^Turn:\s1\s·\sReq:\s1\s·\sTool:\s0/ })).toBeDefined()
+  // Once, under the session's lines: every prompt shares the main loop's context.
+  expect(await ui.findAll({ type: 'Text', text: /^Cache tax:\s≈\$0\.01\s·\sexpired:\s≈\$0\.33$/ })).toHaveLength(1)
 
   await ui.press({ key: 'g:a1' })
   expect(await ui.find({ type: 'Text', text: /Subagent:\s1\sreq\s·\s1\stool/ })).toBeDefined()
@@ -333,6 +338,9 @@ test("a subagent's screen is drawn as the session's list: its header, its runs, 
   expect(request).toBeDefined()
   await ui.press({ key: request!.key! })
   expect(await ui.find({ type: 'Text', text: /Model:\sOpus 5\.5\s·\slow/ })).toBeDefined()
+  // A subagent's run has no turn number of the session's, nor a context to go on from.
+  expect(await ui.find({ type: 'Text', text: /Turn:/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Cache tax:/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /Grep scrollToTop/ })).toBeDefined()
   await ui.unmount()
 })
