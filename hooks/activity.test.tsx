@@ -195,6 +195,148 @@ test('a subagent shows as a card while it runs', async ($, on) => {
   }
 })
 
+test("a subagent's row opens its screen: the prompt it was given, its calls and its answer", async ($, on) => {
+  mock.clock(on)
+  const files = new Map<string, string>()
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'TEMP' ? 'C:\\tmp' : undefined }))
+  on('fs.write', (_, e) => {
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('fs.read', (_, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'a1' }))
+  on('tool.call', () => ({ result: {}, text: 'src/a.ts:3' }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({
+    tool_use_id: 'tu1',
+    prompt: 'Find every caller of scrollToTop.\nReport the files and lines.',
+    description: 'find callers',
+    subagentType: 'Explore',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  })
+  await $.tool.call({ tool: 'Grep', pattern: 'scrollToTop', agentId: 'a1' } as Parameters<typeof $.tool.call>[0])
+
+  // Opened while it runs: its prompt, its call, and no answer yet.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'g:a1' })
+  expect(await ui.find({ type: 'Text', text: /^Report the files and lines\.$/m })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Grep scrollToTop/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /still running/ })).toBeDefined()
+
+  // Its run ends: the screen left open gets the whole report, past the lines the state keeps.
+  const report = ['Callers:', 'src/a.ts:3', 'src/b.ts:9', 'src/c.ts:12', 'src/d.ts:20'].join('\n')
+  await $.turn.complete({ turnId: 's1', agentId: 'a1', answer: report, durationMs: 1000, isAborted: false, reason: 'answer' })
+  expect(await ui.find({ type: 'Text', text: /^src\/d\.ts:20$/m })).toBeDefined()
+
+  // A call opened from it goes back to it; its Back lands on the list.
+  const grepKey = (await ui.find({ type: 'Button', text: /Grep scrollToTop/ }))?.key
+  await ui.press({ key: grepKey! })
+  expect(await ui.find({ type: 'Text', text: /"pattern": "scrollToTop"/ })).toBeDefined()
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /^Report the files and lines\.$/m })).toBeDefined()
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /1 done/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Report the files/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("a subagent's screen is drawn as the session's list: its header, its runs, their requests", async ($, on) => {
+  mock.clock(on)
+  // Its task and report on disk, held in memory.
+  const files = new Map<string, string>()
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'TEMP' ? 'C:\tmp' : undefined }))
+  on('fs.write', (_, e) => {
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('fs.read', (_, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('command.register', () => ({ value: { command: 'activity' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [{ name: 'Grep', input: { pattern: 'scrollToTop' } }],
+      stopReason: 'tool_use' as const,
+      usage: USAGE,
+    }
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'a1' }))
+  on('tool.call', () => ({ result: {}, text: 'src/a.ts:3' }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't1', text: 'find callers' })
+  const main = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1, effort: 'high' })
+  for await (const _ of main) {
+    // drained
+  }
+  await main.result
+  await $.agent.spawn({
+    tool_use_id: 'tu1',
+    prompt: 'Find every caller of scrollToTop.',
+    description: 'find callers',
+    subagentType: 'Explore',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  })
+  // The subagent's run: one request, one call, then its report.
+  await $.turn.start({ turnId: 's1', text: 'Find every caller of scrollToTop.', agentId: 'a1' })
+  const sub = $.turn.step({ turnId: 's1', index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId: 'a1', effort: 'low' })
+  for await (const _ of sub) {
+    // drained
+  }
+  await sub.result
+  await $.tool.call({ tool: 'Grep', pattern: 'scrollToTop', agentId: 'a1' } as Parameters<typeof $.tool.call>[0])
+  await $.turn.complete({ turnId: 's1', agentId: 'a1', answer: 'src/a.ts:3', durationMs: 1000, isAborted: false, reason: 'answer', usage: USAGE })
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000, isAborted: false, reason: 'answer', usage: USAGE })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 100 } })
+  // The session counts its own request; the subagent's run is no prompt of its list.
+  expect(await ui.find({ type: 'Text', text: /Session:\s1\sreq\s·\s0\stool/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Find every caller/ })).toBeUndefined()
+  // Its row names its model (USAGE names Opus 5.5) and effort, with its cost and time in the
+  // figures' column.
+  expect(await ui.find({ type: 'Button', text: /✓ Explore · Opus 5\.5 · low · find callers$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈\$0\.02\s·\s{4}0s$/ })).toBeDefined()
+  // The main loop's request names its own.
+  expect(await ui.find({ type: 'Text', text: /Model:\sOpus 5\.5\s·\shigh/ })).toBeDefined()
+
+  await ui.press({ key: 'g:a1' })
+  expect(await ui.find({ type: 'Text', text: /Subagent:\s1\sreq\s·\s1\stool/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Time:\s0s\s·\sCost:\s≈\$0\.02/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Token:\s41k\s·\sOut:\s300\s·\sCache hit:\s98%/ })).toBeDefined()
+  // Its run opens as the session's newest prompt does, on its numbered request.
+  expect(await ui.find({ type: 'Button', text: /▾ \d{2}:\d{2} Find every caller of scrollToTop\.$/ })).toBeDefined()
+  const request = await ui.find({ type: 'Button', text: /^▸ #1 1× Grep$/ })
+  expect(request).toBeDefined()
+  await ui.press({ key: request!.key! })
+  expect(await ui.find({ type: 'Text', text: /Model:\sOpus 5\.5\s·\slow/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Grep scrollToTop/ })).toBeDefined()
+  await ui.unmount()
+})
+
 const BAND = {
   plugin: 'session-band',
   component: 'AbovePrompt',
@@ -693,6 +835,26 @@ for (const { os, env, dir } of OS_ENVS) {
     on('command.register', () => ({ value: { command: 'activity' } }))
     on('session.end', (_, e) => ({ sessionId: e.sessionId }))
     on('tool.call', () => ({ result: {}, text: 'done' }))
+    on('turn.start', (_, e) => ({ turnId: e.turnId }))
+    on('turn.complete', () => ({ text: '' }))
+    on('agent.spawn', (_, e) => ({ model: 'claude-haiku-5-5', agentId: `a-${e.tool_use_id}` }))
+    // A subagent's run: its task and report go to files in the session's folder.
+    const runAgent = async (id: string) => {
+      const agentId = `a-${id}`
+      await $.agent.spawn({
+        tool_use_id: id,
+        prompt: 'find callers',
+        description: 'find callers',
+        subagentType: 'Explore',
+        provider: { plugin: 'engine', tier: 'core' },
+        parentModel: 'claude-opus-5-5',
+        background: true,
+        fork: false,
+      })
+      await $.turn.start({ turnId: `s-${id}`, text: 'find callers', agentId })
+      await $.tool.call({ tool: 'Grep', pattern: 'x', agentId } as Parameters<typeof $.tool.call>[0])
+      await $.turn.complete({ turnId: `s-${id}`, agentId, answer: 'two callers', durationMs: 1, isAborted: false, reason: 'answer' })
+    }
 
     const root = `${dir}/session-band`
     const now = clock.now()
@@ -721,16 +883,34 @@ for (const { os, env, dir } of OS_ENVS) {
     // This session marks its own folder alive.
     expect(files.has(`${root}/sess-1/alive`)).toBe(true)
 
-    // A /clear: the pane starts over and the folder goes with what it showed.
+    // A /clear: the pane starts over and the folder goes with what it showed, a subagent's
+    // task, report and rows with it.
     await $.tool.call({ tool: 'Bash', command: 'ls' })
+    await runAgent('tu1')
     expect([...files.keys()].some(p => p.startsWith(`${root}/sess-1/toolu`))).toBe(true)
+    expect(files.has(`${root}/sess-1/agent-a-tu1-prompt.json`)).toBe(true)
+    expect(files.has(`${root}/sess-1/agent-a-tu1-answer.json`)).toBe(true)
     await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: { id: 'sess-1' } } as Parameters<
       typeof $.session.end
     >[0])
     expect(removed.at(-1)).toEqual(rm('sess-1'))
     expect([...files.keys()].some(p => p.startsWith(`${root}/sess-1/`))).toBe(false)
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Button', text: /Bash/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', text: /Explore/ })).toBeUndefined()
+    await ui.unmount()
+
+    // A /resume after it: the same again.
+    await runAgent('tu2')
+    expect(files.has(`${root}/sess-1/agent-a-tu2-answer.json`)).toBe(true)
+    await $.session.end({ reason: 'resume', sessionId: 'sess-1', resume: { id: 'sess-1' } } as Parameters<
+      typeof $.session.end
+    >[0])
+    expect(removed.at(-1)).toEqual(rm('sess-1'))
+    expect([...files.keys()].some(p => p.startsWith(`${root}/sess-1/`))).toBe(false)
+    ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ type: 'Button', text: /Explore/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Subagent:/ })).toBeUndefined()
     await ui.unmount()
   })
 }

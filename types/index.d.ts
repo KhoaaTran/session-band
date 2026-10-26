@@ -30,11 +30,11 @@ export type Call = {
   tool: string
   /** What the call works on: a file, a command, a pattern, an agent's task. */
   target: string
-  /** The main-loop turn it ran in; absent for a subagent's call. */
+  /** The turn it ran in, the main loop's or its subagent's; absent when that turn went unheard. */
   turnId?: string
   /** The subagent's loop it ran in; absent on the main loop. */
   agentId?: string
-  /** The main-loop request whose tool use it answers (`Step.n`). */
+  /** The request whose tool use it answers (`Step.n`). */
   step?: number
   status: CallStatus
   startedAt: number
@@ -70,9 +70,12 @@ export type CallBody = {
   isWhole: boolean
 }
 
-/** One main-loop turn: a prompt and everything the model did for it. */
+/** One turn: a prompt and everything the model did for it; a subagent's run is one too. */
 export type Prompt = {
   turnId: string
+  /** The subagent's loop it ran in; absent on the main loop. */
+  agentId?: string
+  /** Its row's title: the prompt on one line, a task notification as its summary, cut short. */
   text: string
   startedAt: number
   endedAt?: number
@@ -83,14 +86,20 @@ export type Prompt = {
 export type StepStatus = 'streaming' | 'done' | 'failed'
 
 /**
- * One request of the main loop to the model. Token totals are the API's own usage;
+ * One request of a loop to the model, the main loop's or a subagent's. Token totals are the API's own usage;
  * only the output's split across text, tool use and thinking is estimated.
  */
 export type Step = {
-  /** 1-based, across the session. */
+  /** 1-based, across the session and every loop: the request's key. */
   n: number
+  /** 1-based within its loop, as its row numbers it; a request kept before it was added has `n`. */
+  seq?: number
+  /** The subagent's loop it ran in; absent on the main loop. */
+  agentId?: string
   turnId: string
   model: string
+  /** The effort it was sent with, when the model takes one. */
+  effort?: string
   status: StepStatus
   stopReason?: string | null
   startedAt: number
@@ -134,6 +143,22 @@ export type AgentRun = {
   output: number
   costUsd: number
   steps: number
+  /** The first lines of the task its spawner gave it, as `AgentBody.prompt` writes it. */
+  prompt?: string
+  /** The first lines of the report its last run handed back. */
+  answer?: string
+}
+
+/** The whole task and report of the subagent whose screen is open, from its files. */
+export type AgentBody = {
+  /** `AgentRun.id`. */
+  id: string
+  /** The Agent call's `prompt`, as the subagent began with it. */
+  prompt?: string
+  /** The report its last run handed back; absent while it runs. */
+  answer?: string
+  /** False when its files are gone: its screen keeps to the first lines `AgentRun` holds. */
+  isWhole: boolean
 }
 
 export type View = {
@@ -144,6 +169,8 @@ export type View = {
   isDoneCollapsed: boolean
   /** The call whose own screen is open, by its `Call.id`; the list when absent. */
   detail?: string
+  /** The subagent whose own screen is open, by its `AgentRun.id`; a call's screen opened from it goes back to it. */
+  agent?: string
 }
 
 /**
@@ -184,6 +211,7 @@ declare module 'claude-code' {
       view: Shaped<View>
       now: number
       body: CallBody | null
+      agentBody: AgentBody | null
       isPaneOpen: boolean
       /** The header's figures from before this process: a resumed session's earlier ones. */
       carried: Totals | null

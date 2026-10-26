@@ -10,7 +10,7 @@ import type {
   TurnStepResult,
 } from 'claude-code'
 
-import type { AgentRun, Call, CallBody, CallStatus, Prompt, Step, Totals, View } from '../types'
+import type { AgentBody, AgentRun, Call, CallBody, CallStatus, Prompt, Step, Totals, View } from '../types'
 
 // The band's full view: a pane of what the session does, opened from the band's button
 // beside Context, `/activity` or ctrl+x ctrl+p. Each prompt lists its requests to the model,
@@ -34,9 +34,10 @@ const DOCK_MIN_COLUMNS = 110
 // The right half of a request's or prompt's row: "⚠ 416k · 8s", "≈$0.31 · 01:20".
 const METRICS_COLUMNS = 16
 
+// Prompts and requests count the subagents' runs and requests too.
 const MAX_CALLS = 1000
-const MAX_PROMPTS = 100
-const MAX_STEPS = 300
+const MAX_PROMPTS = 200
+const MAX_STEPS = 1000
 const MAX_AGENTS = 100
 // A tool call that ran this long is drawn in the warning hue.
 const SLOW_MS = 30_000
@@ -44,6 +45,8 @@ const SLOW_MS = 30_000
 const MAX_ROWS = 12
 const MAX_PROMPTS_SHOWN = 15
 const CHARS_PER_TOKEN = 4
+// A prompt's title as kept: wider than any row draws.
+const PROMPT_TITLE_CHARS = 300
 
 const calls = atom({ plugin: 'session-band', key: 'calls' } as const, [], { shape: 'calls-1' })
 const prompts = atom({ plugin: 'session-band', key: 'prompts' } as const, [], { shape: 'prompts-1' })
@@ -57,6 +60,8 @@ const view = atom(
 const now = atom({ plugin: 'session-band', key: 'now' } as const, 0)
 // The whole input and output of the call whose screen is open, read from its file.
 const body = atom({ plugin: 'session-band', key: 'body' } as const, null)
+// The whole task and report of the subagent whose screen is open, read from its files.
+const agentBody = atom({ plugin: 'session-band', key: 'agentBody' } as const, null)
 // The pane is open: the band's button (register.tsx) reads it for its label.
 const isPaneOpen = atom({ plugin: 'session-band', key: 'isPaneOpen' } as const, false)
 // The header's figures a resumed session showed before, from `$.store`.
@@ -488,6 +493,40 @@ async function readBody($: EngineInterface, id: string): Promise<CallBody> {
   }
 }
 
+// A subagent's task and report, each in its own file beside the calls': the task written
+// at its spawn, the report at each end of its run.
+type AgentPart = 'prompt' | 'answer'
+async function agentPath($: EngineInterface, id: string, part: AgentPart): Promise<string> {
+  return bodyPath($, `agent-${id}-${part}`)
+}
+
+async function writeAgentPart($: EngineInterface, id: string, part: AgentPart, text: string): Promise<void> {
+  try {
+    await markAlive($)
+    await $.fs.write(await agentPath($, id, part), JSON.stringify(text))
+  } catch {
+    // Its screen keeps to the first lines the state holds.
+  }
+}
+
+async function readAgentPart($: EngineInterface, id: string, part: AgentPart): Promise<string | undefined> {
+  try {
+    const text = JSON.parse(await $.fs.read(await agentPath($, id, part))) as unknown
+    return typeof text === 'string' ? text : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readAgentBody($: EngineInterface, id: string): Promise<AgentBody> {
+  const prompt = await readAgentPart($, id, 'prompt')
+  const answer = await readAgentPart($, id, 'answer')
+  // The task first, up to half the room; the report in the rest.
+  const shownPrompt = cutAt(prompt, SCREEN_CHARS / 2, await agentPath($, id, 'prompt'))
+  const shownAnswer = cutAt(answer, SCREEN_CHARS - (shownPrompt?.length ?? 0), await agentPath($, id, 'answer'))
+  return { id, prompt: shownPrompt, answer: shownAnswer, isWhole: prompt !== undefined }
+}
+
 /**
  * A request's response is whole: the API's usage, and its output split across text,
  * tool use and thinking. Text and tool use are sized by their characters; thinking,
@@ -625,31 +664,36 @@ const noTotals = (sessionId: string): Totals => ({
 
 /**
  * The header's figures over the rows the pane keeps, on top of `base`, what the session
- * showed before this process. Every token the API processed, the main loop's requests and
- * the subagents': input with its cache reads, and output.
+ * showed before this process. Every token the API processed, the loop's requests and the
+ * subagents' under it: input with its cache reads, and output.
+ *
+ * `loop` is a subagent's id for its own screen, absent for the session; `agents` the
+ * subagents its calls spawned.
  */
 const totalsOf = (
   base: Totals,
   lists: { prompts: Prompt[]; steps: Step[]; calls: Call[]; agents: AgentRun[] },
   at: number,
+  loop?: string,
 ): Totals => {
   const { promptCost } = costsOf(lists.calls, lists.agents)
-  const mainCalls = lists.calls.filter(c => c.agentId === undefined)
+  const own = <T extends { agentId?: string }>(list: T[]) => list.filter(x => x.agentId === loop)
+  const [ownPrompts, ownSteps, ownCalls] = [own(lists.prompts), own(lists.steps), own(lists.calls)]
   const sum = <T,>(list: T[], of: (x: T) => number) => list.reduce((s, x) => s + of(x), 0)
-  const mainInput = sum(lists.steps, s => s.input ?? 0)
-  const mainOutput = sum(lists.steps, s => s.output ?? 0)
+  const mainInput = sum(ownSteps, s => s.input ?? 0)
+  const mainOutput = sum(ownSteps, s => s.output ?? 0)
   return {
     sessionId: base.sessionId,
-    prompts: base.prompts + lists.prompts.length,
-    requests: base.requests + lists.steps.length,
-    tools: base.tools + mainCalls.length,
-    failed: base.failed + failedOf(mainCalls),
-    durationMs: base.durationMs + sum(lists.prompts, p => (p.endedAt ?? at) - p.startedAt),
-    costUsd: base.costUsd + sum(lists.prompts, promptCost),
+    prompts: base.prompts + ownPrompts.length,
+    requests: base.requests + ownSteps.length,
+    tools: base.tools + ownCalls.length,
+    failed: base.failed + failedOf(ownCalls),
+    durationMs: base.durationMs + sum(ownPrompts, p => (p.endedAt ?? at) - p.startedAt),
+    costUsd: base.costUsd + sum(ownPrompts, promptCost),
     tokens: base.tokens + mainInput + mainOutput + sum(lists.agents, a => a.tokens),
     output: base.output + mainOutput + sum(lists.agents, a => a.output),
     mainInput: base.mainInput + mainInput,
-    cacheRead: base.cacheRead + sum(lists.steps, s => s.cacheRead ?? 0),
+    cacheRead: base.cacheRead + sum(ownSteps, s => s.cacheRead ?? 0),
   }
 }
 
@@ -734,24 +778,36 @@ export async function startActivity($: EngineInterface): Promise<void> {
   })
 }
 
-/** `turn.start`: a main-loop prompt opens a row. */
+/** `turn.start`: a prompt opens a row, the main loop's or a subagent's run. */
 export async function activityTurnStart($: EngineInterface, e: TurnStartInput): Promise<void> {
-  if (e.agentId !== undefined) return
   const at = await $.clock.now()
-  const prompt: Prompt = { turnId: e.turnId, text: e.text, startedAt: at, isAborted: false, costUsd: 0 }
+  const prompt: Prompt = {
+    turnId: e.turnId,
+    agentId: e.agentId,
+    // Only its row's title is drawn: a long paste or brief is not kept whole in the state,
+    // which every event reads (a subagent's task is whole in its file).
+    text: fit(promptTitle(e.text), PROMPT_TITLE_CHARS),
+    startedAt: at,
+    isAborted: false,
+    costUsd: 0,
+  }
   await update($, prompts, list => [...list.filter(p => p.turnId !== e.turnId), prompt].slice(-MAX_PROMPTS))
-  // A new prompt is followed again, whatever was opened by hand before it.
-  await update($, view, v => ({ ...v, isFollowing: true, expanded: [e.turnId] }))
+  // A new main-loop prompt is followed again, whatever was opened by hand before it.
+  if (e.agentId === undefined) await update($, view, v => ({ ...v, isFollowing: true, expanded: [e.turnId] }))
   await update($, now, () => at)
 }
 
-/** `turn.step` as it is sent: a main-loop request opens a row; its `n`, or undefined. */
-export async function activityStepStart($: EngineInterface, e: TurnStepInput): Promise<number | undefined> {
-  if (e.agentId !== undefined) return undefined
+/** `turn.step` as it is sent: a request opens a row, the main loop's or a subagent's; its `n`. */
+export async function activityStepStart($: EngineInterface, e: TurnStepInput): Promise<number> {
   const startedAt = await $.clock.now()
-  const n = ((await read($, steps)).at(-1)?.n ?? 0) + 1
+  const list = await read($, steps)
+  const n = (list.at(-1)?.n ?? 0) + 1
+  const last = list.findLast(s => s.agentId === e.agentId)
   const step: Step = {
     n,
+    seq: (last ? (last.seq ?? last.n) : 0) + 1,
+    effort: typeof e.effort === 'string' ? e.effort : undefined,
+    agentId: e.agentId,
     turnId: e.turnId,
     model: e.model,
     status: 'streaming',
@@ -763,35 +819,35 @@ export async function activityStepStart($: EngineInterface, e: TurnStepInput): P
     isCompacted: false,
   }
   await update($, steps, list => [...list, step].slice(-MAX_STEPS))
-  await update($, view, v => (v.isFollowing ? { ...v, expanded: [e.turnId, stepKey(n)] } : v))
+  if (e.agentId === undefined) {
+    await update($, view, v => (v.isFollowing ? { ...v, expanded: [e.turnId, stepKey(n)] } : v))
+  }
   await update($, now, () => startedAt)
   return n
 }
 
 /**
- * `turn.step` once its response is whole (`result` null when it threw): a main-loop
- * request's row gets its usage and when its first item came (`firstChunkAt`, null when
- * none did); a subagent's live context and output move.
+ * `turn.step` once its response is whole (`result` null when it threw): the request's row
+ * gets its usage and when its first item came (`firstChunkAt`, null when none did); a
+ * subagent's live context and output move too.
  */
 export async function activityStepEnd(
   $: EngineInterface,
   e: TurnStepInput,
-  n: number | undefined,
+  n: number,
   result: TurnStepResult | null,
   firstChunkAt: number | null,
 ): Promise<void> {
   const endedAt = await $.clock.now()
-  if (n !== undefined) {
-    await update($, steps, list => {
-      const prev = list.findLast(s => s.n < n)
-      return list.map((s): Step => {
-        if (s.n !== n) return s
-        const ended: Step = result ? endStep(s, result, endedAt, prev) : { ...s, status: 'failed', endedAt }
-        return firstChunkAt === null ? ended : { ...ended, firstChunkAt }
-      })
+  await update($, steps, list => {
+    // Compared with the request before it in the same loop: another loop's context is not its own.
+    const prev = list.findLast(s => s.n < n && s.agentId === e.agentId)
+    return list.map((s): Step => {
+      if (s.n !== n) return s
+      const ended: Step = result ? endStep(s, result, endedAt, prev) : { ...s, status: 'failed', endedAt }
+      return firstChunkAt === null ? ended : { ...ended, firstChunkAt }
     })
-    return
-  }
+  })
   const agentId = e.agentId
   const usage = result?.usage
   if (!agentId || !usage) return
@@ -833,6 +889,7 @@ export async function activityTurnComplete($: EngineInterface, e: TurnCompleteIn
           ...a,
           status: e.reason === 'answer' ? 'done' : 'failed',
           endedAt: at,
+          answer: excerpt(e.answer) ?? a.answer,
           ...(fallback
             ? {
                 model: fallback.model || a.model,
@@ -844,6 +901,27 @@ export async function activityTurnComplete($: EngineInterface, e: TurnCompleteIn
         }
       }),
     )
+    await update($, prompts, list =>
+      list.map(p =>
+        p.turnId !== e.turnId
+          ? p
+          : {
+              ...p,
+              endedAt: at,
+              isAborted: e.isAborted,
+              costUsd: e.usage ? costOf(e.usage.model, e.usage, false) : p.costUsd,
+            },
+      ),
+    )
+    const run = (await read($, agents)).find(a => a.agentId === agentId)
+    if (run && e.answer) {
+      await writeAgentPart($, run.id, 'answer', e.answer)
+      // Its screen was opened while it ran: it now has the report.
+      if ((await read($, view)).agent === run.id) {
+        const whole = await readAgentBody($, run.id)
+        await update($, agentBody, () => whole)
+      }
+    }
   } else {
     const usage = e.usage
     await update($, prompts, list =>
@@ -868,11 +946,15 @@ export async function activityTurnComplete($: EngineInterface, e: TurnCompleteIn
 export const registerActivity: Register = on => {
   on('command.run', { command: 'activity' }, async ($, e) => {
     if ((e.args ?? '').trim() === 'clear') {
-      const last = (await read($, prompts)).at(-1)
+      const last = (await read($, prompts)).findLast(p => p.agentId === undefined)
       const keep = last?.endedAt === undefined ? last?.turnId : undefined
-      await update($, prompts, list => list.filter(p => p.turnId === keep))
-      await update($, steps, list => list.filter(s => s.turnId === keep))
-      await update($, calls, list => list.filter(c => isLive(c) || (keep && c.turnId === keep)))
+      // A running subagent keeps its rows too.
+      const live = new Set((await read($, agents)).filter(a => a.status === 'running').map(a => a.agentId))
+      const isKept = (x: { turnId?: string; agentId?: string }) =>
+        (keep !== undefined && x.turnId === keep) || (x.agentId !== undefined && live.has(x.agentId))
+      await update($, prompts, list => list.filter(isKept))
+      await update($, steps, list => list.filter(isKept))
+      await update($, calls, list => list.filter(c => isLive(c) || isKept(c)))
       await update($, agents, list => list.filter(a => a.status === 'running'))
       $.ui.toast('Cleared what is done from the pane.')
       return {}
@@ -900,8 +982,9 @@ export const registerActivity: Register = on => {
       await update($, steps, () => [])
       await update($, calls, () => [])
       await update($, agents, () => [])
-      await update($, view, v => ({ ...v, expanded: [], isFollowing: true, detail: undefined }))
+      await update($, view, v => ({ ...v, expanded: [], isFollowing: true, detail: undefined, agent: undefined }))
       await update($, body, () => null)
+      await update($, agentBody, () => null)
       await update($, carried, () => null)
     }
     return ended
@@ -919,9 +1002,9 @@ export const registerActivity: Register = on => {
   on('tool.call', async ($, e, next) => {
     const startedAt = await $.clock.now()
     const id = e.tool_use_id
-    const isMain = e.agentId === undefined
-    const turnId = isMain ? (await read($, prompts)).at(-1)?.turnId : undefined
-    const step = isMain ? (await read($, steps)).findLast(s => s.turnId === turnId)?.n : undefined
+    // Under its loop's latest prompt and request: the main loop's, or its subagent's.
+    const turnId = (await read($, prompts)).findLast(p => p.agentId === e.agentId)?.turnId
+    const step = turnId !== undefined ? (await read($, steps)).findLast(s => s.turnId === turnId)?.n : undefined
     const fullInput = fullInputOf(e.tool, e as unknown as Record<string, unknown>)
     const call: Call = {
       id,
@@ -1014,8 +1097,10 @@ export const registerActivity: Register = on => {
       output: 0,
       costUsd: 0,
       steps: 0,
+      prompt: excerpt(e.prompt),
     }
     await update($, agents, list => [...list.filter(a => a.id !== run.id), run].slice(-MAX_AGENTS))
+    await writeAgentPart($, run.id, 'prompt', e.prompt)
     await update($, now, () => at)
     return started
   })
@@ -1024,6 +1109,8 @@ export const registerActivity: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const allCalls = await read($, calls)
     const promptList = await read($, prompts)
+    // The main loop's prompts: a subagent's runs are on its own screen.
+    const mainPrompts = promptList.filter(p => p.agentId === undefined)
     const stepList = await read($, steps)
     const agentList = await read($, agents)
     const v = await read($, view)
@@ -1119,6 +1206,29 @@ export const registerActivity: Register = on => {
       await reveal(`a:${id}`)
     }
     const shownBody = await read($, body)
+    // A subagent's row opens its own screen; Back lands on its row again.
+    const agentKey = (id: string) => `g:${id}`
+    const runKey = (id: string) => `run:${id}`
+    const openAgent = async (id: string) => {
+      // Its latest run opens, as the session's newest prompt does.
+      const loop = agentList.find(a => a.id === id)?.agentId
+      const latest = (loop !== undefined && promptList.findLast(p => p.agentId === loop)?.turnId) || runKey(id)
+      await update($, view, prev => ({
+        ...prev,
+        isFollowing: false,
+        agent: id,
+        expanded: prev.expanded.includes(latest) ? prev.expanded : [...prev.expanded, latest],
+      }))
+      await reveal(BACK)
+      const whole = await readAgentBody($, id)
+      await update($, agentBody, () => whole)
+    }
+    const closeAgent = async (id: string) => {
+      await update($, view, prev => ({ ...prev, agent: undefined }))
+      await update($, agentBody, () => null)
+      await reveal(agentKey(id))
+    }
+    const shownAgentBody = await read($, agentBody)
 
     // In:
     //   yarn type-check
@@ -1231,6 +1341,13 @@ export const registerActivity: Register = on => {
           {run && isOpen && (
             <Box flexDirection="column" marginLeft={2}>
               {ctxLine(run)}
+              <Button
+                key={`${key}:open`}
+                label="› Prompt and answer"
+                plain
+                dimColor
+                onPress={() => openAgent(run.id)}
+              />
               {callsOf(run).length > 0 ? (
                 callList(`ac:${c.id}`, callsOf(run))
               ) : (
@@ -1259,33 +1376,6 @@ export const registerActivity: Register = on => {
       )
     }
 
-    const detailed = v.detail !== undefined ? allCalls.find(c => c.id === v.detail) : undefined
-    if (detailed) return detailScreen(detailed)
-
-    // A subagent's transcript in view: its own calls.
-    const viewed = e.props.view.agentId
-    if (viewed !== undefined) {
-      const run = agentList.find(a => a.agentId === viewed)
-      const own = allCalls.filter(c => c.agentId === viewed)
-      const failed = failedOf(own)
-      return (
-        <Box flexDirection="column">
-          <Text bold color={REQUEST} wrap="truncate-end">
-            {run ? `${run.type} · ${run.description}` : 'Subagent'}
-          </Text>
-          {items('sum', [
-            run ? item('model', 'Model', SUB, runModel(run)) : false,
-            item('tools', 'Tool', TOOL, String(own.length)),
-            failed > 0 && item('failed', 'Failed', ALERT, String(failed)),
-            run ? item('time', 'Time', TIME, fmtDuration((run.endedAt ?? at) - run.startedAt)) : false,
-          ])}
-          <Box marginTop={1} flexDirection="column">
-            {own.length ? callList('own', own) : <Text color={MUTED}>No tool calls yet.</Text>}
-          </Box>
-        </Box>
-      )
-    }
-
     // A collapsed row keeps its name and time; the rest waits for it to open. ⚠ says
     // something there is worth a look: a failed call, a cache written again.
     // ▸ #67 Bash                               18s
@@ -1307,13 +1397,13 @@ export const registerActivity: Register = on => {
       const needsLook = s.status === 'failed' || isCacheRewrite(s) || failedOf(own) > 0
       // The context the request left, beside its time.
       const context = after !== undefined ? fmtTokens(after) : ''
-      const label = fit(`${isOpen ? '▾' : '▸'} #${s.n} ${gist(s)}`, leftColumns(2))
+      const label = fit(`${isOpen ? '▾' : '▸'} #${s.seq ?? s.n} ${gist(s)}`, leftColumns(2))
       // Before the first item the wait (network, queue, reading the input), after it the writing.
       const timing =
         s.endedAt === undefined
           ? []
           : s.firstChunkAt === undefined
-            ? [item('model', 'Model', TIME, fmtDuration(s.endedAt - s.startedAt))]
+            ? [item('took', 'Time', TIME, fmtDuration(s.endedAt - s.startedAt))]
             : [
                 item('wait', 'Wait', TIME, fmtDuration(s.firstChunkAt - s.startedAt)),
                 item('write', 'Write', TIME, fmtDuration(s.endedAt - s.firstChunkAt)),
@@ -1339,6 +1429,7 @@ export const registerActivity: Register = on => {
                 item('out', 'Out', REQUEST, s.output !== undefined ? fmtTokens(s.output) : '…'),
               ])}
               {timing.length > 0 && items('time', timing)}
+              {items('model', [item('model', 'Model', SUB, s.effort ? `${modelName(s.model)} · ${s.effort}` : modelName(s.model))])}
               {isCacheRewrite(s) && <Text color={WARN}>{`⚠ cache written again ${fmtTokens(s.cacheWrite ?? 0)}`}</Text>}
               {s.isCompacted && <Text color={WARN}>compacted before this request</Text>}
             </Box>
@@ -1352,8 +1443,8 @@ export const registerActivity: Register = on => {
     // ▸ ❯ change the button icon    │   ≈$0.12 · 35s
     // ▾ ❯ fix the contact list scroll │ ⚠ ≈$0.31 · 01:20
     //   Req: 3 · Tool: 5 · Failed: 1 · Context: 19k
-    const promptBlock = (p: Prompt) => {
-      const own = allCalls.filter(c => c.turnId === p.turnId)
+    // `own`: a subagent's run whose turn went unheard lists every call of the subagent.
+    const promptBlock = (p: Prompt, own = allCalls.filter(c => c.turnId === p.turnId)) => {
       const ownSteps = stepList.filter(s => s.turnId === p.turnId)
       // Calls no listed request claims: made before the mod loaded, mid-turn.
       const loose = own.filter(c => c.step === undefined || !ownSteps.some(s => s.n === c.step))
@@ -1422,19 +1513,34 @@ export const registerActivity: Register = on => {
       )
     }
 
-    // ⠋ Explore · Haiku 5.5                42s
+    // A subagent's figures, as a prompt's: what it cost with its own subagents, and its time.
+    const agentMetrics = (a: AgentRun) => {
+      const cost = runCost(a)
+      const isRunning = a.status === 'running'
+      return metrics([
+        a.status === 'failed' && <Text key="look" color={WARN}>⚠ </Text>,
+        cost > 0 && <Text key="price" color={COST}>{`≈${fmtCost(cost)}`}</Text>,
+        cost > 0 && <Text key="dot" color={MUTED}>{' · '}</Text>,
+        <Text key="time" color={isRunning ? YELLOW : TIME}>
+          {timeCell((a.endedAt ?? at) - a.startedAt)}
+        </Text>,
+      ])
+    }
+
+    // ⠋ Explore · Haiku 5.5 · low          │ ≈$0.01 · 42s
     //   find callers of scrollToTop
     //   Ctx: ▰▱▱▱▱▱▱▱▱▱ 12% · 120k tok · ≈$0.05
     const agentCard = (a: AgentRun) => {
       return (
         <Box key={a.id} flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between" columnGap={1}>
-            <Text wrap="truncate-end">
+            <Button key={agentKey(a.id)} plain onPress={() => openAgent(a.id)}>
+              <Text color={MUTED}>› </Text>
               <Text color={YELLOW}>{frame}</Text>
               <Text bold color={REQUEST}>{` ${a.type}`}</Text>
-              <Text color={MUTED}>{` · ${runModel(a)}`}</Text>
-            </Text>
-            <Text color={YELLOW}>{fmtDuration((a.endedAt ?? at) - a.startedAt)}</Text>
+              <Text color={MUTED}>{fit(` · ${runModel(a)}`, leftColumns(0) - 4 - a.type.length)}</Text>
+            </Button>
+            {agentMetrics(a)}
           </Box>
           <Box flexDirection="column" marginLeft={2}>
             <Text color={SUB} wrap="truncate-end">
@@ -1446,17 +1552,23 @@ export const registerActivity: Register = on => {
       )
     }
 
-    // ✓ Explore find callers                  01:10
-    const agentLine = (a: AgentRun) => (
-      <Box key={a.id} flexDirection="row" justifyContent="space-between" columnGap={1}>
-        <Text wrap="truncate-end">
-          <Text color={AGENT_COLOR[a.status]}>{AGENT_GLYPH[a.status] ?? '•'}</Text>
-          <Text color={REQUEST}>{` ${a.type}`}</Text>
-          <Text color={SUB}>{` ${a.description || '—'}`}</Text>
-        </Text>
-        <Text color={MUTED}>{fmtDuration((a.endedAt ?? at) - a.startedAt)}</Text>
-      </Box>
-    )
+    // › ✓ Explore · Haiku 5.5 · low · find callers │ ≈$0.05 · 01:10
+    const agentLine = (a: AgentRun) => {
+      const model = ` · ${runModel(a)} · `
+      const room = leftColumns(0) - 4 - a.type.length - model.length
+      return (
+        <Box key={a.id} flexDirection="row" justifyContent="space-between" columnGap={1}>
+          <Button key={agentKey(a.id)} plain onPress={() => openAgent(a.id)}>
+            <Text color={MUTED}>› </Text>
+            <Text color={AGENT_COLOR[a.status]}>{AGENT_GLYPH[a.status] ?? '•'}</Text>
+            <Text bold color={REQUEST}>{` ${a.type}`}</Text>
+            <Text color={MUTED}>{model}</Text>
+            <Text color={SUB}>{fit(a.description || '—', room)}</Text>
+          </Button>
+          {agentMetrics(a)}
+        </Box>
+      )
+    }
 
     const running = agentList.filter(a => a.status === 'running').reverse()
     const finished = agentList.filter(a => a.status !== 'running').reverse()
@@ -1495,46 +1607,172 @@ export const registerActivity: Register = on => {
     )
 
     // Newest first: the pane opens at its top.
-    const newest = [...promptList].reverse()
+    const newest = [...mainPrompts].reverse()
     const shownPrompts = v.expanded.includes(allKey('prompts')) ? newest : newest.slice(0, MAX_PROMPTS_SHOWN)
     const hiddenPrompts = newest.length - shownPrompts.length
-    // Over the prompts kept, and what a resumed session showed before this process, in
-    // three lines:
+    // Three lines over a loop's rows, the session's or a subagent's:
     // Session: 71 req · 214 tool · 3✗
     // Time: 1:32:10 · Cost: ≈$4.20
     // Token: 8.3M · Out: 42k · Cache hit: 97%
     // Each request sends the conversation again, so the tokens far outgrow the context. The
-    // cache hit is the main loop's input read from the cache.
+    // cache hit is the loop's input read from the cache.
+    const header = (key: string, label: string, t: Totals) => {
+      const cacheHit = t.mainInput > 0 ? Math.round((t.cacheRead / t.mainInput) * 100) : undefined
+      return (
+        <Box key={key} flexDirection="column" marginBottom={1}>
+          {items('count', [
+            item('req', label, PROMPT, `${t.requests} req`),
+            <Text key="tools" bold color={TOOL}>{`${t.tools} tool`}</Text>,
+            t.failed > 0 && <Text key="failed" bold color={ALERT}>{`${t.failed}✗`}</Text>,
+          ])}
+          {items('spent', [
+            item('time', 'Time', TIME, fmtDuration(t.durationMs)),
+            item('cost', 'Cost', COST, `≈${fmtCost(t.costUsd)}`),
+          ])}
+          {t.tokens > 0 &&
+            items('tokens', [
+              item('tokens', 'Token', CONTEXT, fmtTokens(t.tokens)),
+              item('out', 'Out', REQUEST, fmtTokens(t.output)),
+              cacheHit !== undefined &&
+                item('hit', 'Cache hit', TOOL, `${cacheHit}%`, cacheHit >= 80 ? OK : cacheHit >= 50 ? YELLOW : WARN),
+            ])}
+        </Box>
+      )
+    }
+
+    // A subagent's own screen, drawn as the session's list is: its header, then each run of
+    // it as a prompt row, newest first, with its requests and their calls. Below them, whole,
+    // the task its spawner gave it and the report it handed back. Its time, cost and tokens
+    // are the run's own, every request counted even when its turn went unheard.
+    // ‹ Back
+    // ✓ Explore · Haiku 5.5 · low
+    //   find callers
+    // Subagent: 3 req · 5 tool
+    // Time: 01:10 · Cost: ≈$0.05
+    // Token: 120k · Out: 2k · Cache hit: 90%
+    // ▾ 10:02 Find every caller of scrollToTop… │ ≈$0.05 · 01:10
+    const agentScreen = (a: AgentRun, hasBack: boolean) => {
+      const isRead = shownAgentBody?.id === a.id
+      const whole = isRead && shownAgentBody.isWhole ? shownAgentBody : undefined
+      const prompt = whole ? whole.prompt : a.prompt
+      const answer = whole ? (whole.answer ?? a.answer) : a.answer
+      const isRunning = a.status === 'running'
+      const own = callsOf(a)
+      const runs = a.agentId === undefined ? [] : promptList.filter(p => p.agentId === a.agentId)
+      // No turn of it heard (its spawn ran inside another hook's): one row stands for the run.
+      const rows: Prompt[] = runs.length
+        ? [...runs].reverse()
+        : [
+            {
+              turnId: runKey(a.id),
+              agentId: a.agentId,
+              text: a.prompt ?? a.description,
+              startedAt: a.startedAt,
+              endedAt: a.endedAt,
+              isAborted: a.status === 'failed',
+              costUsd: a.costUsd,
+            },
+          ]
+      // Calls made before its turn was heard.
+      const loose = runs.length ? own.filter(c => !runs.some(p => p.turnId === c.turnId)) : []
+      const children = agentList.filter(x => own.some(c => c.id === x.toolUseId))
+      const counted = totalsOf(
+        noTotals(''),
+        { prompts: runs, steps: a.agentId === undefined ? [] : stepList, calls: own, agents: children },
+        at,
+        a.agentId,
+      )
+      const sum = (of: (x: AgentRun) => number) => children.reduce((n, x) => n + of(x), 0)
+      const t: Totals = {
+        ...counted,
+        durationMs: (a.endedAt ?? at) - a.startedAt,
+        costUsd: runCost(a),
+        tokens: a.tokens + sum(x => x.tokens),
+        output: a.output + sum(x => x.output),
+      }
+      return (
+        <Box flexDirection="column">
+          {hasBack && <Button key={BACK} label="‹ Back" plain onPress={() => closeAgent(a.id)} />}
+          <Box marginTop={hasBack ? 1 : 0} marginBottom={1} flexDirection="column">
+            <Text wrap="truncate-end">
+              <Text color={AGENT_COLOR[a.status]}>{isRunning ? frame : (AGENT_GLYPH[a.status] ?? '•')}</Text>
+              <Text bold color={REQUEST}>{` ${a.type}`}</Text>
+              <Text color={MUTED}>{` · ${runModel(a)}`}</Text>
+            </Text>
+            {a.description && (
+              <Box marginLeft={2}>
+                <Text color={SUB} wrap="truncate-end">
+                  {a.description}
+                </Text>
+              </Box>
+            )}
+          </Box>
+          {header('agent', 'Subagent', t)}
+          {rows.map(p => promptBlock(p, runs.length ? undefined : own))}
+          {loose.length > 0 && callList(`l:${a.id}`, loose)}
+          {isRead && !whole && prompt !== undefined && (
+            <Box marginTop={1}>
+              <Text color={WARN} wrap="wrap">
+                Only the first lines are shown: the subagent's files could not be read.
+              </Text>
+            </Box>
+          )}
+          {prompt ? (
+            excerptBlock('prompt', 'Prompt', prompt, SUB)
+          ) : (
+            <Box marginTop={1}>
+              <Text color={MUTED} wrap="wrap">
+                Prompt: not kept; the subagent started before this version of the mod loaded.
+              </Text>
+            </Box>
+          )}
+          {answer ? (
+            excerptBlock('answer', 'Answer', answer, a.status === 'failed' ? ALERT : undefined)
+          ) : (
+            <Box marginTop={1}>
+              <Text color={MUTED} wrap="wrap">
+                {isRunning ? 'Answer: still running; its report shows here once it ends.' : 'Answer: none kept.'}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
+    const detailed = v.detail !== undefined ? allCalls.find(c => c.id === v.detail) : undefined
+    if (detailed) return detailScreen(detailed)
+    const opened = v.agent !== undefined ? agentList.find(a => a.id === v.agent) : undefined
+    if (opened) return agentScreen(opened, true)
+
+    // A subagent's transcript in view: its own screen, with no way back to the session's.
+    const viewed = e.props.view.agentId
+    if (viewed !== undefined) {
+      const run = agentList.find(a => a.agentId === viewed)
+      if (run) return agentScreen(run, false)
+      const own = allCalls.filter(c => c.agentId === viewed)
+      return (
+        <Box flexDirection="column">
+          <Text bold color={REQUEST}>
+            Subagent
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            {own.length ? callList('own', own) : <Text color={MUTED}>No tool calls yet.</Text>}
+          </Box>
+        </Box>
+      )
+    }
+
+    // Over the prompts kept, and what a resumed session showed before this process.
     const before = (await read($, carried)) ?? noTotals('')
     const t = totalsOf(before, { prompts: promptList, steps: stepList, calls: allCalls, agents: agentList }, at)
-    const cacheHit = t.mainInput > 0 ? Math.round((t.cacheRead / t.mainInput) * 100) : undefined
-    const session = (promptList.length > 0 || before.prompts > 0 || before.tools > 0) && (
-      <Box key="session" flexDirection="column" marginBottom={1}>
-        {items('count', [
-          item('req', 'Session', PROMPT, `${t.requests} req`),
-          <Text key="tools" bold color={TOOL}>{`${t.tools} tool`}</Text>,
-          t.failed > 0 && <Text key="failed" bold color={ALERT}>{`${t.failed}✗`}</Text>,
-        ])}
-        {items('spent', [
-          item('time', 'Time', TIME, fmtDuration(t.durationMs)),
-          item('cost', 'Cost', COST, `≈${fmtCost(t.costUsd)}`),
-        ])}
-        {t.tokens > 0 &&
-          items('tokens', [
-            item('tokens', 'Token', CONTEXT, fmtTokens(t.tokens)),
-            item('out', 'Out', REQUEST, fmtTokens(t.output)),
-            cacheHit !== undefined &&
-              item('hit', 'Cache hit', TOOL, `${cacheHit}%`, cacheHit >= 80 ? OK : cacheHit >= 50 ? YELLOW : WARN),
-          ])}
-      </Box>
-    )
+    const session = (mainPrompts.length > 0 || before.prompts > 0 || before.tools > 0) && header('session', 'Session', t)
 
     return (
       <Box flexDirection="column" paddingX={1}>
         {session}
         {backgroundBlock}
         {subagents}
-        {promptList.length === 0 && before.prompts === 0 && <Text color={MUTED}>No prompts yet: send one to start.</Text>}
+        {mainPrompts.length === 0 && before.prompts === 0 && <Text color={MUTED}>No prompts yet: send one to start.</Text>}
         {shownPrompts.flatMap((p, i) => {
           // Newest first: a rule names the day of the prompts below it, where it changes.
           const above = i === 0 ? at : shownPrompts[i - 1]!.startedAt
@@ -1553,7 +1791,7 @@ export const registerActivity: Register = on => {
         {before.prompts > 0 && (
           <Text key="before" color={MUTED}>{`… ${before.prompts} prompts before the resume, counted above, not listed`}</Text>
         )}
-        {promptList.length > 0 && (
+        {mainPrompts.length > 0 && (
           // A rule, then the one button: ▴ in the separator's blue, its words in lavender,
           // dim while nothing is open.
           <Box key="footer" flexDirection="column" marginTop={1}>

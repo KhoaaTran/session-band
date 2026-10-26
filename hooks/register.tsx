@@ -290,12 +290,13 @@ export const register: Register = (on, options) => {
     const stream = next(e)
 
     // Measured from the response's first item, so time-to-first-token is excluded but
-    // thinking that streams hidden or in one late burst is still timed.
+    // thinking that streams hidden or in one late burst is still timed. Every loop's request
+    // rows show it; the band's speed is the main loop's alone.
     let startedAt: number | null = null
 
     try {
       for await (const chunk of stream) {
-        if (isMain && startedAt === null) {
+        if (startedAt === null) {
           startedAt = await $.clock.now()
         }
 
