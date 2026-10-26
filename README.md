@@ -122,6 +122,24 @@ Nothing goes over the network: neither the mod nor `statusline.js` sends data an
 | Runs | one command, to remove a session's folder of its own: `cmd /c rmdir /s /q <folder>` on Windows, `rm -rf -- <folder>` on macOS and Linux, only for a `session-band/<session id>` folder in the temporary folder | nothing |
 | Calls | Claude Code's `PushNotification` tool, 10 and then 5 minutes before the prompt cache expires, while Claude is not working: `<project folder>: the prompt cache expires in 5 min`, shown on the desktop and, over Remote Control, on your phone; a toast when it is not delivered | nothing |
 
+It writes no build, start-up, settings or instructions file: every write goes to its own `session-band/<session id>/` folder in the temporary folder, or to its own `$.store`. It fetches nothing. The only program it runs is the folder removal above, which sends nothing.
+
+#### Its hooks
+
+Every hook passes what it sees on unchanged; the mod only records and draws.
+
+| Event | What the hook does |
+|---|---|
+| `session.start` | registers `/activity` and `/session-band`, starts the pane's one-second clock, removes the folders of sessions that ended |
+| `session.end` | saves the Session lines' figures, removes this session's folder; on `/clear` or a resume, empties the pane |
+| `prompt.submit` | reads a background task's notification, to end the shell row it names |
+| `turn.start`, `turn.step`, `turn.complete` | record each prompt, request (tokens, timing, model, effort) and answer, the main loop's and the subagents' |
+| `tool.call` | records each tool call, its input and its output, in the session's folder |
+| `agent.spawn` | records each subagent: its type, description, model and the prompt it was given |
+| `command.run` | answers its own `/activity` and `/session-band` alone, by matcher |
+| `ui.render` | draws the band above the prompt and the activity pane |
+| `ui.close` | notes that the pane closed, for the band's button |
+
 ## Use
 
 | To | How |
@@ -135,6 +153,13 @@ Nothing goes over the network: neither the mod nor `statusline.js` sends data an
 | Preview the cache expiry notice | `/session-band demo <minutes>` |
 
 Pressing the band's button writes nothing to the transcript. Running `/activity` (the shortcut too) leaves one command line, about ten tokens.
+
+### Examples
+
+- **Back after a break, before the next prompt**: the band's countdown says whether the prompt cache still holds, and `Cache tax` under the pane's Session lines what the next request pays to send the context again, the cache held or expired.
+- **Why a prompt cost what it did**: press its row. Its requests show the context each sent and how long it took, its tool calls what ran; `⚠` marks a failed call or a cache written again.
+- **What a subagent was asked and what it answered**: press its row under Subagent. Its requests and tool calls, then the prompt it was given and its report, whole.
+- **A tool call's whole output after the transcript folded it**: press the call's row; `‹ Back` returns to it.
 
 ## Reading the pane
 
@@ -175,6 +200,32 @@ The pane lists what this process saw of the session: up to 200 prompts and 1000 
 | `statusline.js` | the status line; Node runs it every second, outside the mod, so the engine never loads it |
 
 A plugin has one hooks module and hooks each event once without a matcher, so `session.start`, `turn.start`, `turn.step` and `turn.complete` are the band's hooks, which call the pane's `activity*` functions. It stays one file: the plugin directory reads `$` passed only to a function declared in the same file.
+
+## Privacy
+
+The mod collects nothing for its author and sends nothing off this machine: it has no server.
+
+While a session runs, the pane holds each prompt's title (300 characters), each request's figures and the first lines of each tool call; each tool call's whole input and output, and each subagent's prompt and report, are files in the session's own folder in a temporary folder only you read. All of it goes at exit, `/clear` or a resume. Across sessions it keeps the Session lines' figures alone, about ten numbers a session for the last 50 sessions, and no text of the conversation.
+
+`statusline.js`, with the full install, reads the session's transcript file for three things: its title, its turn count and when the last answer ended. It keeps those three in a small file in the system temp folder, and nothing else of the transcript.
+
+## Troubleshooting
+
+| What you see | What to do |
+|---|---|
+| No band above the prompt | open a new session after installing; `/plugin` lists the mod enabled; `claude --debug` writes `session-band` loading to the debug log |
+| The band shows `(5m, 1h off)` | set `ENABLE_PROMPT_CACHING_1H` to `"1"`, as the full install does |
+| The pane sits above the prompt, not beside the transcript | docking needs the fullscreen layout and 110 columns or more |
+| A subagent's screen says `Prompt: not kept` | it started before the mod loaded; the next ones keep it |
+| A tool call's screen shows its first lines only | its file could not be read: over 4 MiB, or written before this version |
+
+## Support
+
+Questions, bugs and requests: [open an issue](https://github.com/KhoaaTran/session-band/issues). The mod is maintained by [KhoaaTran](https://github.com/KhoaaTran).
+
+## Credits
+
+The band is adapted from session-band in [johnnyvizz's claude-kit](https://github.com/JohnnyVizz/claude-kit) (MIT), whose notice `LICENSE` keeps. The pane's per-request view follows turn-inspector in [davila7/claude-code-templates](https://github.com/davila7/claude-code-templates).
 
 ## Checks
 

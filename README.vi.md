@@ -124,6 +124,24 @@ Không có gì đi qua mạng: cả mod lẫn `statusline.js` đều không gử
 | Chạy | một lệnh, để xoá thư mục của chính nó cho một session: `cmd /c rmdir /s /q <folder>` trên Windows, `rm -rf -- <folder>` trên macOS và Linux, chỉ với thư mục `session-band/<session id>` trong thư mục tạm | không có |
 | Gọi | tool `PushNotification` của Claude Code khi cache prompt còn 10 rồi 5 phút là hết hạn và Claude đang không làm gì: `<thư mục project>: the prompt cache expires in 5 min`, hiện trên máy tính và, qua Remote Control, trên điện thoại; không gửi được thì hiện toast | không có |
 
+Mod không ghi file build, khởi động, setting hay instructions nào: mọi lần ghi đều vào thư mục riêng `session-band/<session id>/` trong thư mục tạm, hoặc vào `$.store` riêng của nó. Nó không tải gì về. Chương trình duy nhất nó chạy là lệnh xoá thư mục ở trên, lệnh đó không gửi gì đi.
+
+#### Các hook của mod
+
+Mọi hook đều để nguyên những gì nó thấy; mod chỉ ghi lại và vẽ.
+
+| Sự kiện | Hook làm gì |
+|---|---|
+| `session.start` | đăng ký `/activity` và `/session-band`, chạy đồng hồ một giây của pane, xoá thư mục của các session đã kết thúc |
+| `session.end` | lưu các số của dòng Session, xoá thư mục của session này; khi `/clear` hay resume thì làm trống pane |
+| `prompt.submit` | đọc notification của task nền, để kết thúc dòng shell mà nó nhắc tới |
+| `turn.start`, `turn.step`, `turn.complete` | ghi lại từng prompt, request (token, thời gian, model, effort) và câu trả lời, của main loop và của subagent |
+| `tool.call` | ghi lại từng tool call, input và output của nó, vào thư mục của session |
+| `agent.spawn` | ghi lại từng subagent: loại, mô tả, model và prompt nó nhận |
+| `command.run` | chỉ trả lời `/activity` và `/session-band` của chính nó, qua matcher |
+| `ui.render` | vẽ band trên prompt và pane activity |
+| `ui.close` | ghi nhận pane đã đóng, cho nút trên band |
+
 ## Dùng
 
 | Việc | Cách |
@@ -137,6 +155,13 @@ Không có gì đi qua mạng: cả mod lẫn `statusline.js` đều không gử
 | Thử thông báo cache sắp hết | `/session-band demo <phút>` |
 
 Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (kể cả qua phím tắt) để lại một dòng lệnh, khoảng chục token.
+
+### Ví dụ
+
+- **Quay lại sau một lúc nghỉ, trước prompt tiếp theo**: đồng hồ của band cho biết cache prompt còn hạn không, và `Cache tax` dưới các dòng Session của pane cho biết request tiếp theo trả bao nhiêu để gửi lại context, khi cache còn hạn hay đã hết.
+- **Vì sao một prompt tốn chừng đó**: bấm vào dòng của nó. Các request cho thấy context mỗi lần gửi và thời gian, các tool call cho thấy cái gì đã chạy; `⚠` đánh dấu tool lỗi hay cache bị ghi lại.
+- **Subagent được giao gì và trả lời gì**: bấm vào dòng của nó trong mục Subagent. Các request và tool call của nó, rồi nguyên văn prompt nó nhận và báo cáo nó trả về.
+- **Xem đầy đủ output của một tool call mà transcript đã thu gọn**: bấm vào dòng của call đó; `‹ Back` quay lại.
 
 ## Đọc số liệu trong pane
 
@@ -177,6 +202,32 @@ Pane liệt kê những gì tiến trình này thấy của session: tối đa 2
 | `statusline.js` | status line; Node chạy nó mỗi giây, ngoài mod, nên engine không nạp nó |
 
 Mỗi plugin chỉ có một hooks module và mỗi sự kiện chỉ được hook một lần không có matcher, nên `session.start`, `turn.start`, `turn.step`, `turn.complete` là hook của band, rồi gọi các hàm `activity*` của pane. Code nằm trong một file vì plugin directory chỉ chấp nhận truyền `$` cho hàm khai báo trong cùng file.
+
+## Quyền riêng tư
+
+Mod không thu thập gì cho tác giả và không gửi gì ra khỏi máy này: nó không có server.
+
+Khi session chạy, pane giữ tiêu đề của từng prompt (300 ký tự), số liệu của từng request và vài dòng đầu của từng tool call; input và output đầy đủ của từng tool call, cùng prompt và báo cáo của từng subagent, là các file trong thư mục riêng của session, nằm trong thư mục tạm chỉ bạn đọc được. Tất cả bị xoá khi thoát, `/clear` hay resume. Giữa các session, mod chỉ giữ các số của dòng Session, khoảng chục con số cho mỗi session, cho 50 session gần nhất, và không giữ chữ nào của hội thoại.
+
+`statusline.js`, khi cài đầy đủ, đọc file transcript của session để lấy ba thứ: tiêu đề, số turn và lúc câu trả lời cuối kết thúc. Nó giữ ba thứ đó trong một file nhỏ ở thư mục temp của hệ thống, và không giữ gì khác của transcript.
+
+## Xử lý sự cố
+
+| Bạn thấy | Cách xử lý |
+|---|---|
+| Không có band trên prompt | mở session mới sau khi cài; `/plugin` liệt kê mod đang bật; `claude --debug` ghi việc nạp `session-band` vào debug log |
+| Band hiện `(5m, 1h off)` | đặt `ENABLE_PROMPT_CACHING_1H` thành `"1"`, như cách cài đầy đủ |
+| Pane nằm trên prompt, không nằm cạnh transcript | dock cạnh transcript cần layout fullscreen và từ 110 cột trở lên |
+| Màn subagent ghi `Prompt: not kept` | subagent đó chạy trước khi mod nạp; các subagent sau sẽ giữ được |
+| Màn tool call chỉ có vài dòng đầu | không đọc được file của nó: quá 4 MiB, hoặc được ghi trước bản này |
+
+## Hỗ trợ
+
+Câu hỏi, lỗi và đề xuất: [mở issue](https://github.com/KhoaaTran/session-band/issues). Mod do [KhoaaTran](https://github.com/KhoaaTran) duy trì.
+
+## Ghi công
+
+Band được chuyển thể từ session-band trong [claude-kit của johnnyvizz](https://github.com/JohnnyVizz/claude-kit) (MIT), thông báo bản quyền của tác giả được giữ trong `LICENSE`. Phần xem từng request của pane làm theo turn-inspector trong [davila7/claude-code-templates](https://github.com/davila7/claude-code-templates).
 
 ## Kiểm tra
 
