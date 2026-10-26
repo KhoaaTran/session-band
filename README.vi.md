@@ -112,6 +112,18 @@ Thư mục bị xoá khi session kết thúc (thoát, `/clear`, resume). Khi m�
 
 Khi resume, pane tính tiếp từ các số đó: dòng Session, Time, Cost và Token cộng cả phần trước, còn các prompt trước lúc resume chỉ hiện thành một dòng đếm, `… 9 prompts before the resume`. Dòng prompt, request và tool call của chúng không được giữ.
 
+### Mọi thứ mod chạy, đọc và gửi
+
+Không có gì đi qua mạng: cả mod lẫn `statusline.js` đều không gửi dữ liệu đi đâu, không tải gì về, và không đổi setting hay quyền nào.
+
+| | Mod (`hooks/`) | `statusline.js` (chỉ khi cài đầy đủ) |
+|---|---|---|
+| Theo dõi | prompt, request, tool call và subagent của session để vẽ lên pane; nội dung của chúng chỉ nằm trên máy này, trong các file ở trên | JSON mà Claude Code đưa cho status line |
+| Đọc | các biến môi trường `HOME`, `USERPROFILE`, `OS`, `TEMP`, `TMP`, `TMPDIR` và `XDG_RUNTIME_DIR`, để tìm thư mục tạm và thư mục home; hai file ở mục Band đọc gì; thư mục riêng và `$.store` của nó; số liệu usage của session | transcript của session, để lấy tiêu đề và số turn; `~/.claude/statusline.local.js` nếu bạn có tạo |
+| Ghi | thư mục riêng và `$.store` của nó, như ở trên | `claude-statusline-<session id>.json` và `claude-prompt-cache-<session id>.json` trong thư mục temp của hệ thống, `~/.claude/rate-limits-cache.json` |
+| Chạy | một lệnh, để xoá thư mục của chính nó cho một session: `cmd /c rmdir /s /q <folder>` trên Windows, `rm -rf -- <folder>` trên macOS và Linux, chỉ với thư mục `session-band/<session id>` trong thư mục tạm | không có |
+| Gọi | tool `PushNotification` của Claude Code khi cache prompt còn 10 rồi 5 phút là hết hạn và Claude đang không làm gì: `<thư mục project>: the prompt cache expires in 5 min`, hiện trên máy tính và, qua Remote Control, trên điện thoại; không gửi được thì hiện toast | không có |
+
 ## Dùng
 
 | Việc | Cách |

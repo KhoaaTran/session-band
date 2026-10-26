@@ -110,6 +110,18 @@ The folder goes when its session ends (exit, `/clear`, a resume). A session's st
 
 A resumed session's pane goes on from those figures: its Session, Time, Cost and Token lines count what came before, and the prompts from before the resume show as one line, `… 9 prompts before the resume`. Their rows, requests and tool calls are not kept.
 
+### Everything it runs, reads and sends
+
+Nothing goes over the network: neither the mod nor `statusline.js` sends data anywhere or downloads anything, and neither changes a setting or a permission.
+
+| | The mod (`hooks/`) | `statusline.js` (full install only) |
+|---|---|---|
+| Watches | the session's prompts, requests, tool calls and subagents, to draw them; their text stays on this machine, in the files above | the JSON Claude Code hands a status line |
+| Reads | the environment variables `HOME`, `USERPROFILE`, `OS`, `TEMP`, `TMP`, `TMPDIR` and `XDG_RUNTIME_DIR`, to find the temporary and home folders; the two files under What the band reads; its own folder and `$.store`; the session's usage figures | the session's transcript, for its title and turn count; `~/.claude/statusline.local.js` when you made one |
+| Writes | its own folder and `$.store`, as above | `claude-statusline-<session id>.json` and `claude-prompt-cache-<session id>.json` in the system temp folder, `~/.claude/rate-limits-cache.json` |
+| Runs | one command, to remove a session's folder of its own: `cmd /c rmdir /s /q <folder>` on Windows, `rm -rf -- <folder>` on macOS and Linux, only for a `session-band/<session id>` folder in the temporary folder | nothing |
+| Calls | Claude Code's `PushNotification` tool, 10 and then 5 minutes before the prompt cache expires, while Claude is not working: `<project folder>: the prompt cache expires in 5 min`, shown on the desktop and, over Remote Control, on your phone; a toast when it is not delivered | nothing |
+
 ## Use
 
 | To | How |
