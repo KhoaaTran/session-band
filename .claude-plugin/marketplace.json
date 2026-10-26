@@ -1,0 +1,13 @@
+{
+  "name": "session-band",
+  "owner": {
+    "name": "KhoaaTran"
+  },
+  "description": "session-band: a band above the Claude Code prompt and an activity pane of requests, tool calls and subagents",
+  "plugins": [
+    {
+      "name": "session-band",
+      "source": "./"
+    }
+  ]
+}

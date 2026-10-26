@@ -14,7 +14,19 @@ A Claude Code mod in two parts, with a status line to go with it:
 
 ## Install
 
-Needs a Claude Code with mods (on by default from 2.1.287; written against 2.1.310), Node.js and git. Works on macOS, Linux and Windows.
+Needs a Claude Code with mods (on by default from 2.1.287; written against 2.1.310). Works on macOS, Linux and Windows.
+
+### One line
+
+The band and the activity pane, at the prompt of a terminal session:
+
+```text
+/plugin install session-band --marketplace KhoaaTran/session-band
+```
+
+Answer `y` to add the marketplace, then pick a scope (the user scope is first). From a shell: `claude plugin install session-band --marketplace KhoaaTran/session-band`. In the desktop app: + next to the prompt box, Plugins, Add marketplace with `KhoaaTran/session-band`, then Add plugin.
+
+The status line, the hour-long prompt cache and the pane's shortcut are not part of a plugin: for them, install with the prompt below instead, which also needs Node.js and git.
 
 ### One prompt
 
@@ -88,7 +100,7 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ my thing" + C.r : "")
 
 | Folder | For |
 |---|---|
-| `session-band/<session id>/` in a temporary folder only you read: `%TEMP%` on Windows, `$TMPDIR` on macOS, `$XDG_RUNTIME_DIR` (else `~/.cache`) on Linux | each tool call's whole input and output, one JSON file per call, and an `alive` mark the session renews every minute |
+| `session-band/<session id>/` in a temporary folder only you read: `%TEMP%` on Windows, `$TMPDIR` on macOS, `$XDG_RUNTIME_DIR` (else `~/.cache`) on Linux | each tool call's whole input and output, one JSON file per call, each subagent's prompt and report, and an `alive` mark the session renews every minute |
 
 The folder goes when its session ends (exit, `/clear`, a resume). A session's start removes the folders of sessions that ended without removing theirs, a killed one included, and leaves alone those another running session still marks. The session's state keeps only each call's first lines.
 

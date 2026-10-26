@@ -16,7 +16,19 @@ Giao diện của mod (band, pane, thông báo) viết bằng tiếng Anh; READM
 
 ## Cài đặt
 
-Cần Claude Code bản có mod (bật sẵn từ 2.1.287; mod được viết trên 2.1.310), Node.js và git. Chạy được trên macOS, Linux và Windows.
+Cần Claude Code bản có mod (bật sẵn từ 2.1.287; mod được viết trên 2.1.310). Chạy được trên macOS, Linux và Windows.
+
+### Một dòng
+
+Band và pane activity, gõ ở prompt của một session trong terminal:
+
+```text
+/plugin install session-band --marketplace KhoaaTran/session-band
+```
+
+Trả lời `y` để thêm marketplace, rồi chọn scope (scope user đứng đầu). Từ shell: `claude plugin install session-band --marketplace KhoaaTran/session-band`. Trong app desktop: bấm + cạnh ô prompt, Plugins, Add marketplace với `KhoaaTran/session-band`, rồi Add plugin.
+
+Status line, cache prompt 1 giờ và phím tắt mở pane không nằm trong plugin: muốn có chúng thì cài bằng prompt dưới đây, cách này cần thêm Node.js và git.
 
 ### Một prompt
 
@@ -90,7 +102,7 @@ module.exports = (d, C) => (d.session_id ? C.teal + "◆ việc riêng" + C.r : 
 
 | Thư mục | Dùng để |
 |---|---|
-| `session-band/<session id>/` trong thư mục tạm chỉ bạn đọc được: `%TEMP%` trên Windows, `$TMPDIR` trên macOS, `$XDG_RUNTIME_DIR` (không có thì `~/.cache`) trên Linux | input và output đầy đủ của từng tool call, mỗi call một file JSON, cùng dấu `alive` mà session ghi lại mỗi phút |
+| `session-band/<session id>/` trong thư mục tạm chỉ bạn đọc được: `%TEMP%` trên Windows, `$TMPDIR` trên macOS, `$XDG_RUNTIME_DIR` (không có thì `~/.cache`) trên Linux | input và output đầy đủ của từng tool call, mỗi call một file JSON, prompt và báo cáo của từng subagent, cùng dấu `alive` mà session ghi lại mỗi phút |
 
 Thư mục bị xoá khi session kết thúc (thoát, `/clear`, resume). Khi một session khởi động, nó xoá thư mục của các session đã kết thúc mà chưa tự xoá được, kể cả session bị tắt ngang, và để yên thư mục mà một session khác vẫn đang ghi dấu. State của session chỉ giữ vài dòng đầu của mỗi call.
 

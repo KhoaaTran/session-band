@@ -1,7 +1,22 @@
 {
   "name": "session-band",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Band above the prompt: turn, 1h prompt cache countdown, speed, context, 5h and weekly limits, and a button to the activity pane (requests, tool calls and subagents per prompt); warns before the cache expires",
+  "author": {
+    "name": "KhoaaTran",
+    "url": "https://github.com/KhoaaTran"
+  },
+  "homepage": "https://github.com/KhoaaTran/session-band",
+  "repository": "https://github.com/KhoaaTran/session-band",
+  "keywords": [
+    "claude-code",
+    "status",
+    "prompt-cache",
+    "context",
+    "rate-limits",
+    "subagents",
+    "activity"
+  ],
   "license": "MIT",
   "types": "./types/index.d.ts"
 }
