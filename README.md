@@ -155,7 +155,7 @@ Pressing the band's button writes nothing to the transcript. Running `/activity`
 | `Wait` / `Write` | from sending to the response's first item / from there to its end; `Time` when no item of it was seen |
 | `⚠` | something worth a look: a failed tool, a failed request, a cache rewrite, a prompt stopped |
 | `⚠ cache written again 365k` | the cache expired, so the request wrote the whole context again (20k tokens or more, at least half its input) |
-| `Cost` | an estimate from the price table in `hooks/activity.tsx`, subagents included; the engine reports tokens, not money |
+| `Cost` | an estimate from the price table in `hooks/register.tsx`, subagents included; the engine reports tokens, not money |
 
 Tools run while the model is still writing its reply, so a request's time is not `Wait + Write` plus its tools.
 
@@ -169,13 +169,12 @@ The pane lists what this process saw of the session: up to 200 prompts and 1000 
 
 | File | Holds |
 |---|---|
-| `hooks/register.tsx` | the band, the hooks both parts share, the `☰` button |
-| `hooks/activity.tsx` | the activity pane and its data |
+| `hooks/register.tsx` | the hooks module, whole: the band and its `☰` button, then the activity pane and its data |
 | `hooks/activity.test.tsx` | tests of the pane and the band |
 | `types/index.d.ts` | the type of every value in `$.state` |
 | `statusline.js` | the status line; Node runs it every second, outside the mod, so the engine never loads it |
 
-A plugin hooks each event once without a matcher, so `register.tsx` hooks `session.start`, `turn.start`, `turn.step` and `turn.complete` and calls the `activity*` functions of `activity.tsx`.
+A plugin has one hooks module and hooks each event once without a matcher, so `session.start`, `turn.start`, `turn.step` and `turn.complete` are the band's hooks, which call the pane's `activity*` functions. It stays one file: the plugin directory reads `$` passed only to a function declared in the same file.
 
 ## Checks
 

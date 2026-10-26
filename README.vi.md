@@ -157,7 +157,7 @@ Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (k
 | `Wait` / `Write` | từ lúc gửi tới phần đầu tiên của response về / từ đó tới hết response; `Time` khi không thấy phần nào của response |
 | `⚠` | có chuyện cần xem: tool lỗi, request lỗi, cache bị ghi lại, prompt bị dừng |
 | `⚠ cache written again 365k` | cache đã hết hạn nên request ghi lại cả context (ghi từ 20k token và ít nhất nửa input) |
-| `Cost` | ước tính theo bảng giá trong `hooks/activity.tsx`, đã gồm subagent; engine chỉ báo token chứ không báo tiền |
+| `Cost` | ước tính theo bảng giá trong `hooks/register.tsx`, đã gồm subagent; engine chỉ báo token chứ không báo tiền |
 
 Tool chạy song song với lúc model đang viết câu trả lời, nên thời gian của request không bằng `Wait + Write` cộng thời gian các tool.
 
@@ -171,13 +171,12 @@ Pane liệt kê những gì tiến trình này thấy của session: tối đa 2
 
 | File | Nội dung |
 |---|---|
-| `hooks/register.tsx` | band, các hook dùng chung, nút `☰` |
-| `hooks/activity.tsx` | pane activity và dữ liệu của nó |
+| `hooks/register.tsx` | toàn bộ hooks module: band và nút `☰`, rồi pane activity và dữ liệu của nó |
 | `hooks/activity.test.tsx` | test của pane và band |
 | `types/index.d.ts` | kiểu của mọi giá trị trong `$.state` |
 | `statusline.js` | status line; Node chạy nó mỗi giây, ngoài mod, nên engine không nạp nó |
 
-Mỗi sự kiện chỉ được hook một lần không có matcher, nên `register.tsx` hook `session.start`, `turn.start`, `turn.step`, `turn.complete` rồi gọi các hàm `activity*` của `activity.tsx`.
+Mỗi plugin chỉ có một hooks module và mỗi sự kiện chỉ được hook một lần không có matcher, nên `session.start`, `turn.start`, `turn.step`, `turn.complete` là hook của band, rồi gọi các hàm `activity*` của pane. Code nằm trong một file vì plugin directory chỉ chấp nhận truyền `$` cho hàm khai báo trong cùng file.
 
 ## Kiểm tra
 

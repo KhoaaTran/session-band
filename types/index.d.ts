@@ -20,7 +20,7 @@ export type Usage = {
   weekly: Limit | null
 }
 
-// The activity pane (hooks/activity.tsx).
+// The activity pane (the second half of hooks/register.tsx).
 
 /** `background`: the call answered, its command still runs as a background task. */
 export type CallStatus = 'running' | 'background' | 'ok' | 'error' | 'denied'
