@@ -122,21 +122,24 @@ Pressing the band's button writes nothing to the transcript. Running `/activity`
 | Times | seconds under a minute (`14s`), a clock from a minute (`01:39`, `1:02:40`); the right column pads them to one width so they line up |
 | Prompt row, left | when it was sent (`14:21`, lit while it is open or runs), then its text; a turn a background task's notification started reads as its summary (`Background command "…" completed (exit code 0)`); where the prompts listed cross midnight, a rule names the day (`── 24/10 ──`) |
 | Prompt row, right | what the prompt cost, subagents included · its whole time; the context it left is in its summary |
+| `Turn` | the main loop's turn number in the session, those before a resume counted |
+| `Cache tax` · `expired` | what a request pays to send the context again, going on with the task: read from the cache while it holds (read price) · written to it again once it expired (write price). One line under the session lines, from the main loop's context now |
+| `Model` | the model and effort the request was sent with |
 | Request row (`#n`), right | context after that request · time from sending it to its last tool's answer |
 | Tool row, right | how long the tool ran, a background shell's until its task ended; orange from 30s |
 | `In` / `Out` | input tokens (cache included) / tokens the model wrote, from the API |
-| `Wait` / `Write` | from sending to the response's first item / from there to its end |
+| `Wait` / `Write` | from sending to the response's first item / from there to its end; `Time` when no item of it was seen |
 | `⚠` | something worth a look: a failed tool, a failed request, a cache rewrite, a prompt stopped |
 | `⚠ cache written again 365k` | the cache expired, so the request wrote the whole context again (20k tokens or more, at least half its input) |
 | `Cost` | an estimate from the price table in `hooks/activity.tsx`, subagents included; the engine reports tokens, not money |
 
 Tools run while the model is still writing its reply, so a request's time is not `Wait + Write` plus its tools.
 
-An `Agent` row opens on the subagent it spawned: its context, cost and tool calls. While a subagent's transcript is in view, the pane shows that subagent's calls only.
+An `Agent` row opens on the subagent it spawned: its context, cost and tool calls. A subagent's row under `Subagent`, running or done, names its type, model · effort and task, with its cost · time on the right. It opens its own screen, drawn as the main list is: three `Subagent` lines (requests, tool calls, time, cost, tokens, cache hit), then each run of it as a prompt row with its `#n` requests and their calls; last, whole, the prompt its spawner gave it and the report it handed back. A call opened there goes Back to it. While a subagent's transcript is in view, the pane shows that screen.
 
 Any other tool row opens its own screen: status, time and result size, then `In` as the tool took it and `Out` whole, as the model read it. `In` is a shell's command as written, with any argument that changes its run (a timeout, a background run) as JSON under it, or another tool's arguments as JSON. A tool that answered with no text (ToolSearch, an image read) shows its result record, an image's data as its size. Colours and control characters are left out of what the screen draws, not of the file. Past 80,000 characters the screen names the file that holds the rest.
 
-The pane lists what this process saw of the session: up to 100 prompts, 300 requests, 1000 tool calls, 100 subagents. Only the session lines' figures outlive it.
+The pane lists what this process saw of the session: up to 200 prompts and 1000 requests (the main loop's and the subagents' together), 1000 tool calls, 100 subagents. `/clear`, `/resume` or an exit removes it all, the subagents' prompt and report files too. Only the session lines' figures outlive it.
 
 ## Layout
 

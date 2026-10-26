@@ -124,21 +124,24 @@ Bấm vào nút trong band không ghi gì vào transcript. Chạy `/activity` (k
 | Thời gian | dưới 1 phút viết bằng giây (`14s`), từ 1 phút viết dạng đồng hồ (`01:39`, `1:02:40`); cột bên phải đệm cho cùng độ rộng để thẳng hàng |
 | Dòng prompt, bên trái | giờ gửi (`14:21`, sáng màu khi prompt đang mở hoặc đang chạy), rồi nội dung prompt; lượt do notification của task nền mở ra thì hiện phần tóm tắt (`Background command "…" completed (exit code 0)`); khi danh sách vắt qua nửa đêm, một dòng kẻ ghi ngày (`── 24/10 ──`) |
 | Dòng prompt, bên phải | chi phí của prompt, gồm cả subagent · tổng thời gian; context sau prompt nằm ở dòng tóm tắt |
+| `Turn` | số thứ tự lượt của main loop trong session, tính cả các lượt trước khi resume |
+| `Cache tax` · `expired` | tiền một request phải trả để gửi lại context nếu tiếp tục task: khi cache còn hạn thì đọc từ cache (giá đọc) · khi cache hết hạn thì ghi lại vào cache (giá ghi). Một dòng chung dưới ba dòng Session, tính theo context hiện tại của main |
+| `Model` | model và effort mà request đó được gửi đi |
 | Dòng request (`#n`), bên phải | context sau request đó · thời gian từ lúc gửi request tới khi tool cuối xong |
 | Dòng tool, bên phải | thời gian tool chạy, với shell chạy nền thì tính tới khi task kết thúc; màu cam khi từ 30s trở lên |
 | `In` / `Out` | token input (gồm cache) / token model sinh ra, lấy từ API |
-| `Wait` / `Write` | từ lúc gửi tới phần đầu tiên của response về / từ đó tới hết response |
+| `Wait` / `Write` | từ lúc gửi tới phần đầu tiên của response về / từ đó tới hết response; `Time` khi không thấy phần nào của response |
 | `⚠` | có chuyện cần xem: tool lỗi, request lỗi, cache bị ghi lại, prompt bị dừng |
 | `⚠ cache written again 365k` | cache đã hết hạn nên request ghi lại cả context (ghi từ 20k token và ít nhất nửa input) |
 | `Cost` | ước tính theo bảng giá trong `hooks/activity.tsx`, đã gồm subagent; engine chỉ báo token chứ không báo tiền |
 
 Tool chạy song song với lúc model đang viết câu trả lời, nên thời gian của request không bằng `Wait + Write` cộng thời gian các tool.
 
-Dòng `Agent` mở ra được, hiện context, chi phí và các tool call của subagent mà nó tạo. Khi đang xem transcript của một subagent, pane chỉ hiện tool call của subagent đó.
+Dòng `Agent` mở ra được, hiện context, chi phí và các tool call của subagent mà nó tạo. Mỗi dòng subagent trong mục `Subagent`, đang chạy hay đã xong, ghi loại, model · effort, mô tả, và bên phải là chi phí · thời gian. Bấm vào thì mở màn riêng, vẽ y như danh sách của main: ba dòng `Subagent` (request, tool call, thời gian, chi phí, token, cache hit), rồi mỗi lượt chạy của nó là một dòng prompt với các request `#n` và tool call bên dưới; cuối màn là nguyên văn prompt agent gọi nó đã gửi và báo cáo đầy đủ nó trả về. Tool call mở từ đây có Back quay về màn subagent. Khi đang xem transcript của một subagent, pane hiện màn đó của subagent.
 
 Các dòng tool khác mở ra màn riêng: trạng thái, thời gian, độ dài kết quả, rồi `In` đúng như tool nhận và `Out` đầy đủ như model đã đọc. `In` của shell là câu lệnh nguyên văn, kèm bên dưới dạng JSON các tham số làm đổi cách chạy (timeout, chạy nền); của tool khác là các tham số dạng JSON. Tool trả về không có chữ (ToolSearch, đọc ảnh) thì hiện bản ghi kết quả của tool, dữ liệu ảnh chỉ ghi kích thước. Màu và ký tự điều khiển bị bỏ khi vẽ lên màn hình, còn trong file vẫn giữ nguyên. Quá 80.000 ký tự thì màn hình ghi đường dẫn file chứa phần còn lại.
 
-Pane liệt kê những gì tiến trình này thấy của session: tối đa 100 prompt, 300 request, 1000 tool call, 100 subagent. Chỉ các số ở dòng Session còn lại sau đó.
+Pane liệt kê những gì tiến trình này thấy của session: tối đa 200 prompt và 1000 request (tính chung main và subagent), 1000 tool call, 100 subagent. `/clear`, `/resume` hay thoát session thì xóa hết, cả file prompt và báo cáo của subagent. Chỉ các số ở dòng Session còn lại sau đó.
 
 ## Cấu trúc
 
